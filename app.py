@@ -1,25 +1,24 @@
 import streamlit as st
+import torch
 import cv2
 import numpy as np
 import pandas as pd
 import time
-from ultralytics import YOLO
 
-st.set_page_config(page_title="HelmetGuard AI", layout="wide")
+st.set_page_config(page_title="HelmetGuard AI YOLOv5", layout="wide")
 
 @st.cache_resource
 def load_model():
-    return YOLO("best.pt")
+    # Load YOLOv5 model from your local weights file
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
+    return model
 
 model = load_model()
 
-st.title("🎥 HelmetGuard AI - Real-Time Helmet Detection")
+st.title("🎥 HelmetGuard AI - YOLOv5 Helmet Detection")
 
-# Add a confidence threshold slider in the sidebar
-CONF_THRESH = st.sidebar.slider("Confidence threshold", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
-
-def draw_boxes(frame, df):
-    for _, row in df.iterrows():
+def draw_boxes(frame, results_df):
+    for _, row in results_df.iterrows():
         x1, y1, x2, y2 = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
         label = f"{row['name']} {row['confidence']:.2f}"
         color = (0, 255, 0) if row['name'] == 'helmet_on' else (0, 0, 255)
@@ -52,11 +51,11 @@ if video_file is not None:
                 st.info("🎬 Video processing complete.")
                 break
 
+            # Run inference on frame
             results = model(frame)
-            df = results.pandas().xyxy[0]
 
-            # Apply confidence threshold filter here
-            df = df[df['confidence'] >= CONF_THRESH]
+            # Extract detections to dataframe
+            df = results.pandas().xyxy[0]
 
             helmet_count = (df['name'] == 'helmet_on').sum()
             no_helmet_count = (df['name'] == 'no_helmet').sum()
