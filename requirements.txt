@@ -8,5 +8,5 @@ opencv-python-headless
 matplotlib
 pyyaml
 seaborn
-ultralytics>=8.0.0
+ultralytics
 
