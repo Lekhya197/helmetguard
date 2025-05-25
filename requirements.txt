@@ -1,8 +1,10 @@
 streamlit
-opencv-python-headless
 torch
 torchvision
-numpy
 pandas
-ultralytics
-
+numpy
+Pillow
+opencv-python-headless
+matplotlib
+pyyaml
+seaborn
