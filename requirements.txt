@@ -1,7 +1,8 @@
 streamlit
-opencv-python-headless
+opencv-python-headless==4.9.0.8
 torch
 torchvision
 numpy
 pandas
 ultralytics
+git+https://github.com/ultralytics/yolov5.git
