@@ -1,15 +1,15 @@
 import streamlit as st
-import torch
 import cv2
+import torch
 import numpy as np
-import pandas as pd
 import time
+import pandas as pd
 
-st.set_page_config(page_title="HelmetGuard AI YOLOv5", layout="wide")
+st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
-@st.cache_resource
+@st.cache_resource(show_spinner=True)
 def load_model():
-    # Load YOLOv5 model from your local weights file
+    # Load YOLOv5 model from torch.hub (your custom weights path here)
     model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
     return model
 
@@ -17,13 +17,21 @@ model = load_model()
 
 st.title("🎥 HelmetGuard AI - YOLOv5 Helmet Detection")
 
-def draw_boxes(frame, results_df):
-    for _, row in results_df.iterrows():
-        x1, y1, x2, y2 = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
-        label = f"{row['name']} {row['confidence']:.2f}"
-        color = (0, 255, 0) if row['name'] == 'helmet_on' else (0, 0, 255)
+CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
+
+def draw_boxes(frame, results):
+    for *box, conf, cls in results.xyxy[0]:
+        if conf < CONFIDENCE_THRESHOLD:
+            continue
+
+        x1, y1, x2, y2 = map(int, box)
+        label = model.names[int(cls)]
+        conf_text = f"{label} {conf:.2f}"
+
+        color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.putText(frame, conf_text, (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
 video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
@@ -51,19 +59,22 @@ if video_file is not None:
                 st.info("🎬 Video processing complete.")
                 break
 
-            # Run inference on frame
+            # Run inference
             results = model(frame)
 
-            # Extract detections to dataframe
-            df = results.pandas().xyxy[0]
+            # Filter by confidence
+            detections = results.xyxy[0]
+            detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
 
-            helmet_count = (df['name'] == 'helmet_on').sum()
-            no_helmet_count = (df['name'] == 'no_helmet').sum()
+            # Count helmets and no helmets
+            labels = [model.names[int(cls)] for cls in detections[:, 5]]
+            helmet_count = labels.count('helmet_on')
+            no_helmet_count = labels.count('no_helmet')
 
-            frame = draw_boxes(frame, df)
+            frame = draw_boxes(frame, results)
 
-            helmet_metric.metric("✅ Helmet On", int(helmet_count))
-            no_helmet_metric.metric("🚨 No Helmet", int(no_helmet_count))
+            helmet_metric.metric("✅ Helmet On", helmet_count)
+            no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
             if no_helmet_count > 0:
                 alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
