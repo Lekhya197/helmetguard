@@ -1,11 +1,15 @@
 import streamlit as st
-import torch
 import cv2
 import numpy as np
+import pandas as pd
+import time
+from ultralytics import YOLO
+
+st.set_page_config(page_title="HelmetGuard AI", layout="wide")
 
 @st.cache_resource
 def load_model():
-    return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=False)
+    return YOLO("best.pt")
 
 model = load_model()
 
@@ -20,38 +24,53 @@ def draw_boxes(frame, df):
         cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
-frame_placeholder = st.empty()
+video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
 
-cap = cv2.VideoCapture("/Users/sreelekhyauggina/Desktop/project/he2.mp4")
+if video_file is not None:
+    temp_video_path = "temp_video.mp4"
+    with open(temp_video_path, "wb") as f:
+        f.write(video_file.read())
 
-if not cap.isOpened():
-    st.error("Cannot open video file: /Users/sreelekhyauggina/Desktop/project/he2.mp4")
+    cap = cv2.VideoCapture(temp_video_path)
+
+    if not cap.isOpened():
+        st.error("❌ Could not open the uploaded video. Please try another file.")
+    else:
+        st.success("✅ Processing video...")
+
+        frame_placeholder = st.empty()
+        helmet_metric = st.sidebar.empty()
+        no_helmet_metric = st.sidebar.empty()
+        alert_placeholder = st.sidebar.empty()
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                st.info("🎬 Video processing complete.")
+                break
+
+            results = model(frame)
+            df = results.pandas().xyxy[0]
+
+            helmet_count = (df['name'] == 'helmet_on').sum()
+            no_helmet_count = (df['name'] == 'no_helmet').sum()
+
+            frame = draw_boxes(frame, df)
+
+            helmet_metric.metric("✅ Helmet On", int(helmet_count))
+            no_helmet_metric.metric("🚨 No Helmet", int(no_helmet_count))
+
+            if no_helmet_count > 0:
+                alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+            else:
+                alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_placeholder.image(frame_rgb, channels="RGB")
+
+            time.sleep(0.03)
+
+        cap.release()
 else:
-    st.warning("Streaming from video file")
+    st.info("⬆️ Please upload a video to begin helmet detection.")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Failed to read frame. Stream ended or cannot capture.")
-            break
-
-        results = model(frame)
-        df = results.pandas().xyxy[0]
-
-        helmet_count = (df['name'] == 'helmet_on').sum()
-        no_helmet_count = (df['name'] == 'no_helmet').sum()
-
-        frame = draw_boxes(frame, df)
-
-        st.sidebar.metric("✅ Helmet On", helmet_count)
-        st.sidebar.metric("🚨 No Helmet", no_helmet_count)
-
-        if no_helmet_count > 0:
-            st.sidebar.error("Alert: No helmet detected!")
-        else:
-            st.sidebar.success("All good: Helmets detected.")
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_placeholder.image(frame_rgb, channels="RGB")
-
-cap.release()
