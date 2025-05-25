@@ -5,4 +5,4 @@ torchvision
 numpy
 pandas
 ultralytics
-git+https://github.com/ultralytics/yolov5.git
+
