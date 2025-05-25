@@ -3,13 +3,11 @@ import cv2
 import torch
 import numpy as np
 import time
-import pandas as pd
 
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
 @st.cache_resource(show_spinner=True)
 def load_model():
-    # Load YOLOv5 model from torch.hub (your custom weights path here)
     model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
     return model
 
@@ -18,6 +16,9 @@ model = load_model()
 st.title("🎥 HelmetGuard AI - YOLOv5 Helmet Detection")
 
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
+
+# Load the alert audio file
+alert_audio_file = open("alert.mp3", "rb").read()  # Use alert.wav if needed
 
 def draw_boxes(frame, results):
     for *box, conf, cls in results.xyxy[0]:
@@ -52,6 +53,7 @@ if video_file is not None:
         helmet_metric = st.sidebar.empty()
         no_helmet_metric = st.sidebar.empty()
         alert_placeholder = st.sidebar.empty()
+        audio_placeholder = st.empty()  # For playing sound
 
         while True:
             ret, frame = cap.read()
@@ -59,14 +61,10 @@ if video_file is not None:
                 st.info("🎬 Video processing complete.")
                 break
 
-            # Run inference
             results = model(frame)
-
-            # Filter by confidence
             detections = results.xyxy[0]
             detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
 
-            # Count helmets and no helmets
             labels = [model.names[int(cls)] for cls in detections[:, 5]]
             helmet_count = labels.count('helmet_on')
             no_helmet_count = labels.count('no_helmet')
@@ -78,8 +76,11 @@ if video_file is not None:
 
             if no_helmet_count > 0:
                 alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                # Play sound only when detected
+                audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
             else:
                 alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                audio_placeholder.empty()  # Stop audio if all clear
 
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame_placeholder.image(frame_rgb, channels="RGB")
