@@ -1,15 +1,15 @@
 import streamlit as st
 import cv2
+import torch
 import numpy as np
 import pandas as pd
 import time
-from ultralytics import YOLO
 
 st.set_page_config(page_title="HelmetGuard AI", layout="wide")
 
 @st.cache_resource
 def load_model():
-    return YOLO("best.pt")
+    return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
 
 model = load_model()
 
@@ -73,4 +73,3 @@ if video_file is not None:
         cap.release()
 else:
     st.info("⬆️ Please upload a video to begin helmet detection.")
-
