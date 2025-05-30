@@ -15,13 +15,10 @@ def load_model():
     return model
 
 model = load_model()
-
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
-
 alert_audio_file = open("alert.mp3", "rb").read()
 
 st.title("🎥 HelmetGuard AI - YOLOv5 Helmet Detection")
-
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
 def draw_boxes(frame, results):
@@ -53,14 +50,14 @@ if mode == "Upload Video":
             frame_placeholder = st.empty()
             helmet_metric = st.sidebar.empty()
             no_helmet_metric = st.sidebar.empty()
-            alert_placeholder = st.sidebar.empty()
-            audio_placeholder = st.empty()
-            
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     st.info("🎬 Video processing complete.")
                     break
+
+                frame = cv2.resize(frame, (640, 640))
                 results = model(frame)
                 detections = results.xyxy[0]
                 detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
@@ -70,7 +67,6 @@ if mode == "Upload Video":
                 no_helmet_count = labels.count('no_helmet')
 
                 frame = draw_boxes(frame, results)
-
                 helmet_metric.metric("✅ Helmet On", helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
@@ -83,37 +79,33 @@ if mode == "Upload Video":
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
-
                 time.sleep(0.03)
             cap.release()
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
-else:  # Webcam mode
-
+else:
     alert_state = {"no_helmet": False}
 
-  class VideoProcessor:
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.resize(img, (640, 640))  # Resize for YOLOv5
+    class VideoProcessor:
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+            img = cv2.resize(img, (640, 640))
+            results = model(img)
+            detections = results.xyxy[0]
 
-        results = model(img)
-        detections = results.xyxy[0]
+            labels = [model.names[int(cls)] for cls in detections[:, 5]]
+            alert_state["no_helmet"] = labels.count('no_helmet') > 0
 
-        labels = [model.names[int(cls)] for cls in detections[:, 5]]
-        print("Detected labels:", labels)  # Optional debug
+            img = draw_boxes(img, results)
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        alert_state["no_helmet"] = labels.count('no_helmet') > 0
-        img = draw_boxes(img, results)
-
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-
-
-    webrtc_ctx = webrtc_streamer(key="helmet-detection", video_processor_factory=VideoProcessor,
-                                 media_stream_constraints={"video": True, "audio": False},
-                                 async_processing=True)
+    webrtc_ctx = webrtc_streamer(
+        key="helmet-detection",
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
 
     def update_ui():
         while True:
@@ -129,6 +121,5 @@ else:  # Webcam mode
                 audio_placeholder.empty()
             time.sleep(0.5)
 
-    import threading
     thread = threading.Thread(target=update_ui, daemon=True)
     thread.start()
