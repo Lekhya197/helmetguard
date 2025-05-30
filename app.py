@@ -93,14 +93,23 @@ else:  # Webcam mode
 
     alert_state = {"no_helmet": False}
 
-    class VideoProcessor:
-        def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            results = model(img)
-            labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
-            alert_state["no_helmet"] = labels.count('no_helmet') > 0
-            img = draw_boxes(img, results)
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
+  class VideoProcessor:
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.resize(img, (640, 640))  # Resize for YOLOv5
+
+        results = model(img)
+        detections = results.xyxy[0]
+
+        labels = [model.names[int(cls)] for cls in detections[:, 5]]
+        print("Detected labels:", labels)  # Optional debug
+
+        alert_state["no_helmet"] = labels.count('no_helmet') > 0
+        img = draw_boxes(img, results)
+
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+
 
     webrtc_ctx = webrtc_streamer(key="helmet-detection", video_processor_factory=VideoProcessor,
                                  media_stream_constraints={"video": True, "audio": False},
