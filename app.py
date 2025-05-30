@@ -1,100 +1,125 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
-import av
-import torch
+from streamlit_webrtc import webrtc_streamer
 import cv2
+import torch
+import av
+import threading
 import numpy as np
+import time
 
-# Configuration
-CONF_THRESHOLD = 0.25  # Confidence threshold
-MODEL_PATH = 'best.pt'
+st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
-@st.cache_resource
+@st.cache_resource(show_spinner=True)
 def load_model():
-    model = torch.hub.load('ultralytics/yolov5', 'custom', path=MODEL_PATH)
-    model.conf = CONF_THRESHOLD
-    model.eval()
-    st.success("✅ Model loaded successfully!")
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
     return model
 
-class VideoProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.model = load_model()
-        self.frame_count = 0
-        self.last_log_time = 0
+model = load_model()
 
-    def recv(self, frame):
-        self.frame_count += 1
-        try:
-            # Convert frame to numpy array (BGR format)
+CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
+
+alert_audio_file = open("alert.mp3", "rb").read()
+
+st.title("🎥 HelmetGuard AI - YOLOv5 Helmet Detection")
+
+mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
+
+def draw_boxes(frame, results):
+    for *box, conf, cls in results.xyxy[0]:
+        if conf < CONFIDENCE_THRESHOLD:
+            continue
+        x1, y1, x2, y2 = map(int, box)
+        label = model.names[int(cls)]
+        conf_text = f"{label} {conf:.2f}"
+        color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, conf_text, (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    return frame
+
+alert_placeholder = st.empty()
+audio_placeholder = st.empty()
+
+if mode == "Upload Video":
+    video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
+    if video_file is not None:
+        temp_video_path = "temp_video.mp4"
+        with open(temp_video_path, "wb") as f:
+            f.write(video_file.read())
+        cap = cv2.VideoCapture(temp_video_path)
+        if not cap.isOpened():
+            st.error("❌ Could not open the uploaded video. Please try another file.")
+        else:
+            frame_placeholder = st.empty()
+            helmet_metric = st.sidebar.empty()
+            no_helmet_metric = st.sidebar.empty()
+            alert_placeholder = st.sidebar.empty()
+            audio_placeholder = st.empty()
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    st.info("🎬 Video processing complete.")
+                    break
+                results = model(frame)
+                detections = results.xyxy[0]
+                detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
+
+                labels = [model.names[int(cls)] for cls in detections[:, 5]]
+                helmet_count = labels.count('helmet_on')
+                no_helmet_count = labels.count('no_helmet')
+
+                frame = draw_boxes(frame, results)
+
+                helmet_metric.metric("✅ Helmet On", helmet_count)
+                no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
+
+                if no_helmet_count > 0:
+                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                else:
+                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                    audio_placeholder.empty()
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(frame_rgb, channels="RGB")
+
+                time.sleep(0.03)
+            cap.release()
+    else:
+        st.info("⬆️ Please upload a video to begin helmet detection.")
+
+else:  # Webcam mode
+
+    alert_state = {"no_helmet": False}
+
+    class VideoProcessor:
+        def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
-            
-            # Store original dimensions for debugging
-            orig_h, orig_w = img.shape[:2]
-            
-            # Convert to RGB (YOLOv5 expects RGB)
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # Let YOLOv5 handle resizing internally
-            results = self.model(img_rgb)
-            
-            # Get detections
-            detections = results.pandas().xyxy[0]
-            
-            # Draw bounding boxes on original image (BGR)
-            for _, det in detections.iterrows():
-                x1, y1, x2, y2 = map(int, [det['xmin'], det['ymin'], det['xmax'], det['ymax']])
-                label = f"{det['name']} {det['confidence']:.2f}"
-                color = (0, 255, 0) if det['name'] == 'helmet_on' else (0, 0, 255)
-                
-                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(img, label, (x1, y1 - 10), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            
-            # Debug logging (every 30 frames)
-            if self.frame_count % 30 == 0:
-                st.write(f"📊 Frame {self.frame_count} - Detections:")
-                st.write(detections)
-                st.write(f"Original dimensions: {orig_w}x{orig_h}")
-            
+            results = model(img)
+            labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
+            alert_state["no_helmet"] = labels.count('no_helmet') > 0
+            img = draw_boxes(img, results)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
-            
-        except Exception as e:
-            st.error(f"❌ Processing error: {str(e)}")
-            return frame
 
-# Streamlit UI
-st.title("🪖 Real-time Helmet Detection")
-st.markdown("""
-This application detects helmets in real-time using your webcam.
-- ✅ Green boxes: Proper helmet usage
-- ❌ Red boxes: No helmet detected
-""")
+    webrtc_ctx = webrtc_streamer(key="helmet-detection", video_processor_factory=VideoProcessor,
+                                 media_stream_constraints={"video": True, "audio": False},
+                                 async_processing=True)
 
-# Webcam streamer
-webrtc_ctx = webrtc_streamer(
-    key="helmet-detection",
-    mode=WebRtcMode.SENDRECV,
-    video_processor_factory=VideoProcessor,
-    media_stream_constraints={
-        "video": {
-            "width": {"ideal": 640},
-            "height": {"ideal": 480},
-            "frameRate": {"ideal": 20, "max": 30}
-        },
-        "audio": False
-    },
-    async_processing=True,
-    rtc_configuration={
-        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-    }
-)
+    def update_ui():
+        while True:
+            if webrtc_ctx.state.playing:
+                if alert_state["no_helmet"]:
+                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                else:
+                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                    audio_placeholder.empty()
+            else:
+                alert_placeholder.info("📷 Webcam inactive.")
+                audio_placeholder.empty()
+            time.sleep(0.5)
 
-if not webrtc_ctx.state.playing:
-    st.info("⌛ Waiting for webcam to start...")
-    st.warning("""
-    If the webcam doesn't start:
-    1. Check browser permissions
-    2. Try a different browser (Chrome works best)
-    3. Ensure no other app is using the webcam
-    """)
+    import threading
+    thread = threading.Thread(target=update_ui, daemon=True)
+    thread.start()
