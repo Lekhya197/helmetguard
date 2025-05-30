@@ -50,15 +50,14 @@ class VideoProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        st.write(f"Frame shape: {img.shape}")  # Debug line to check frame size
         img = cv2.resize(img, (1020, 600))
 
         results = model(img)
         df = results.pandas().xyxy[0]
 
-        # Debug to check the dataframe and class names
-        st.write(f"Detected classes: {df['name'].unique()}")  
-        st.write(df.head())  # Display the first few rows of df
+        print("Frame shape:", img.shape)
+        print("Detected classes:", df['name'].unique())
+        print(df.head())
 
         filtered = df[
             ((df['name'] == 'no_helmet') & (df['confidence'] >= no_helmet_conf_threshold)) |
@@ -83,11 +82,8 @@ class VideoProcessor(VideoProcessorBase):
             cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 2)
             cv2.putText(img, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-        # Display the frame locally for debugging
-        cv2.imshow("Detection", img)  # Show the frame
-        cv2.waitKey(1)  # Make sure the frame is shown
-
         return av.VideoFrame.from_ndarray(img, format="bgr24")
+
 
 webrtc_streamer(key="helmet-detection",
                 mode=WebRtcMode.SENDRECV,
