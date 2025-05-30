@@ -10,4 +10,5 @@ matplotlib
 pyyaml
 seaborn
 ultralytics
-
+pygame
+requests
