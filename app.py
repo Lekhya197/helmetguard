@@ -27,9 +27,9 @@ def load_model():
 
 model = load_model()
 
-# Confidence Threshold
+# Sidebar configuration
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
-alert_threshold = 3  # Frame threshold to avoid spamming
+alert_threshold = 3  # Number of continuous frames to confirm no helmet before alert
 
 # Telegram async alert
 def send_telegram_message_async(message):
@@ -41,14 +41,13 @@ def send_telegram_message_async(message):
             st.warning(f"Telegram error: {e}")
     threading.Thread(target=send).start()
 
-# Play alert
-def alert_no_helmet():
+# Play alert sound
+def play_alert_sound():
     pygame.mixer.init()
     pygame.mixer.music.load("alert.mp3")
     pygame.mixer.music.play()
-    send_telegram_message_async("🚨 Helmet violation detected!")
 
-# Draw bounding boxes
+# Draw boxes
 def draw_boxes(frame, results):
     for *box, conf, cls in results.xyxy[0]:
         if conf < CONFIDENCE_THRESHOLD:
@@ -65,7 +64,7 @@ def draw_boxes(frame, results):
 # Mode selector
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
-# Video upload mode
+# ------------------ Upload Video Mode ------------------
 if mode == "Upload Video":
     video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
     if video_file is not None:
@@ -104,7 +103,7 @@ if mode == "Upload Video":
                 if no_helmet_count > 0:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
-                    send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
+                    send_telegram_message_async("🚨 Helmet violation detected!")
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
@@ -116,11 +115,17 @@ if mode == "Upload Video":
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
-# Webcam mode
+# ------------------ Webcam Mode ------------------
 else:
-    alert_state = {"no_helmet_count": 0}
+    alert_state = {
+        "no_helmet_count": 0,
+        "alert_triggered": False
+    }
 
     class VideoProcessor(VideoProcessorBase):
+        def __init__(self):
+            self.frame = None
+
         def recv(self, frame):
             img_bgr = frame.to_ndarray(format="bgr24")
             img_bgr = cv2.resize(img_bgr, (1280, 720))
@@ -140,10 +145,7 @@ else:
                 alert_state["no_helmet_count"] += 1
             else:
                 alert_state["no_helmet_count"] = 0
-
-            if alert_state["no_helmet_count"] >= alert_threshold:
-                alert_no_helmet()
-                alert_state["no_helmet_count"] = 0
+                alert_state["alert_triggered"] = False
 
             for _, row in filtered.iterrows():
                 xmin, ymin, xmax, ymax = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
@@ -152,6 +154,7 @@ else:
                 cv2.rectangle(img_bgr, (xmin, ymin), (xmax, ymax), color, 2)
                 cv2.putText(img_bgr, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
+            self.frame = img_bgr
             return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
 
     alert_placeholder = st.empty()
@@ -168,9 +171,13 @@ else:
     def update_ui():
         while True:
             if ctx.state.playing:
-                if alert_state["no_helmet_count"] > 0:
-                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                if alert_state["no_helmet_count"] >= alert_threshold:
+                    if not alert_state["alert_triggered"]:
+                        alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                        audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                        send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
+                        play_alert_sound()
+                        alert_state["alert_triggered"] = True
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
