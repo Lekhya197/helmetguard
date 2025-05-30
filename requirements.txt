@@ -12,3 +12,4 @@ seaborn
 ultralytics
 pygame
 requests
+playsound
