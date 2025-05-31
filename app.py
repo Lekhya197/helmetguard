@@ -12,52 +12,49 @@ import requests
 BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
 CHAT_ID = '6674142283'
 
-# Streamlit Config
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 st.title("🪖 HelmetGuard AI - Helmet Detection with YOLOv5")
 
 # Load alert audio once
 alert_audio_file = open("alert.mp3", "rb").read()
 
-# Load YOLOv5 model
 @st.cache_resource
 def load_model():
     return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
 
 model = load_model()
 
-# Sidebar configuration
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
 alert_threshold = 3  # number of consecutive frames to confirm alert
 
-# Telegram message sending (async)
+# Async Telegram sending
 def send_telegram_message_async(message):
     def send():
         try:
-            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                          data={'chat_id': CHAT_ID, 'text': message})
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                data={'chat_id': CHAT_ID, 'text': message},
+                timeout=5
+            )
         except Exception as e:
             st.warning(f"Telegram error: {e}")
-    threading.Thread(target=send).start()
+    threading.Thread(target=send, daemon=True).start()
 
-# Draw bounding boxes on frame
-def draw_boxes(frame, results):
+def draw_boxes(frame, results, conf_threshold):
     for *box, conf, cls in results.xyxy[0]:
-        if conf < CONFIDENCE_THRESHOLD:
+        if conf < conf_threshold:
             continue
         x1, y1, x2, y2 = map(int, box)
         label = model.names[int(cls)]
-        conf_text = f"{label} {conf:.2f}"
         color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
+        text = f"{label} {conf:.2f}"
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, conf_text, (x1, y1 - 10),
+        cv2.putText(frame, text, (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
-# Mode selection
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
-# ------------------ Upload Video ------------------
 if mode == "Upload Video":
     video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
     if video_file is not None:
@@ -75,6 +72,8 @@ if mode == "Upload Video":
             alert_placeholder = st.sidebar.empty()
             audio_placeholder = st.empty()
 
+            alert_sent = False
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
@@ -88,7 +87,7 @@ if mode == "Upload Video":
                 helmet_count = labels.count('helmet_on')
                 no_helmet_count = labels.count('no_helmet')
 
-                frame = draw_boxes(frame, results)
+                frame = draw_boxes(frame, results, CONFIDENCE_THRESHOLD)
 
                 helmet_metric.metric("✅ Helmet On", helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
@@ -96,10 +95,13 @@ if mode == "Upload Video":
                 if no_helmet_count > 0:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
-                    send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
+                    if not alert_sent:
+                        send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
+                        alert_sent = True
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
+                    alert_sent = False
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
@@ -108,7 +110,6 @@ if mode == "Upload Video":
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
-# ------------------ Webcam ------------------
 else:
     class VideoProcessor(VideoProcessorBase):
         def __init__(self):
@@ -122,7 +123,6 @@ else:
 
             results = model(img_rgb)
             df = results.pandas().xyxy[0]
-
             filtered = df[df['confidence'] >= CONFIDENCE_THRESHOLD]
 
             detections = []
@@ -130,29 +130,26 @@ else:
 
             for i, row in filtered.iterrows():
                 label = row['name']
-                conf = row['confidence']
                 xmin, ymin, xmax, ymax = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
-                track_id = i  # Replace with actual tracker ID if available
-                detections.append({'id': track_id, 'label': label, 'bbox': (xmin, ymin, xmax, ymax)})
+                detections.append({'id': i, 'label': label, 'bbox': (xmin, ymin, xmax, ymax), 'conf': row['confidence']})
                 labels.append(label)
 
             violation_detected_this_frame = False
 
             for detection in detections:
-                track_id = int(detection['id'])
+                track_id = detection['id']
                 label = detection['label']
+                conf = detection['conf']
 
                 state = self.object_states.get(track_id, {'last_state': None, 'alert_sent': False})
 
-                if label == 'no_helmet' and state['last_state'] == 'helmet_on' and not state['alert_sent']:
-                    send_telegram_message_async(f"🚨 Helmet violation for object #{track_id}")
+                if label == 'no_helmet' and not state['alert_sent']:
+                    send_telegram_message_async(f"🚨 Helmet violation detected for object #{track_id} with confidence {conf:.2f}")
                     state['alert_sent'] = True
                     violation_detected_this_frame = True
-
                 elif label == 'helmet_on':
                     state['alert_sent'] = False
                     state['last_state'] = 'helmet_on'
-
                 else:
                     if state['last_state'] is None:
                         state['last_state'] = label
@@ -172,9 +169,11 @@ else:
             for detection in detections:
                 xmin, ymin, xmax, ymax = detection['bbox']
                 label = detection['label']
+                conf = detection['conf']
                 color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
+                text = f"{label} {conf:.2f}"
                 cv2.rectangle(img_bgr, (xmin, ymin), (xmax, ymax), color, 2)
-                cv2.putText(img_bgr, label, (xmin, ymin - 10),
+                cv2.putText(img_bgr, text, (xmin, ymin - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
