@@ -88,7 +88,6 @@ if mode == "Upload Video":
             audio_placeholder = st.empty()
 
             last_telegram_alert_time = 0
-            alert_active = False
 
             while True:
                 ret, frame = cap.read()
@@ -114,24 +113,24 @@ if mode == "Upload Video":
                 if no_helmet_count > 0:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
-                    if not alert_active or (current_time - last_telegram_alert_time > ALERT_INTERVAL_SECONDS):
+
+                    if current_time - last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
                         telegram_alert_queue.put("🚨 Alert: Riders without helmets detected in uploaded video by HelmetGuard AI!")
                         last_telegram_alert_time = current_time
-                        alert_active = True
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
-                    alert_active = False
-                    last_telegram_alert_time = 0
+                    last_telegram_alert_time = 0  # reset timer
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
 
-                time.sleep(0.03)
+                time.sleep(0.03)  # To reduce CPU usage slightly, but can be adjusted or removed
 
             cap.release()
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
+
 
 else:
     alert_state = {
