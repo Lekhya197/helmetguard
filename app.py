@@ -137,18 +137,33 @@ if mode == "Upload Video":
 
 
 else:  # Webcam mode
-    alert_state = {"no_helmet": False}
-    last_telegram_alert_time = {"time": 0}
+    last_telegram_alert_time = 0
     telegram_alert_queue = queue.Queue()
+    ALERT_INTERVAL_SECONDS = 10  # Customize as needed
 
     class VideoProcessor:
         def recv(self, frame):
+            nonlocal last_telegram_alert_time  # So we can access & update shared time variable
+
             img = frame.to_ndarray(format="bgr24")
             results = model(img)
             labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
-            no_helmet_detected = labels.count("no_helmet") > 0
-            alert_state["no_helmet"] = no_helmet_detected
             img = draw_boxes(img, results)
+
+            # Telegram alert logic directly inside recv
+            if 'no_helmet' in labels:
+                current_time = time.time()
+                if current_time - last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
+                    telegram_alert_queue.put("🚨 Alert: Rider without helmet detected! (Webcam)")
+                    last_telegram_alert_time = current_time
+
+                # Display alert visually/audio
+                alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+            else:
+                alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                audio_placeholder.empty()
+
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
     webrtc_ctx = webrtc_streamer(
@@ -158,41 +173,14 @@ else:  # Webcam mode
         async_processing=True,
     )
 
-    def update_ui():
-        while True:
-            if webrtc_ctx.state.playing:
-                current_time = time.time()
-
-                if alert_state["no_helmet"]:
-                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
-
-                    if current_time - last_telegram_alert_time["time"] > ALERT_INTERVAL_SECONDS:
-                        telegram_alert_msg = "🚨 Alert: Riders without helmets detected by HelmetGuard AI! (Webcam)"
-                        print("[DEBUG] Putting telegram message in queue")
-                        telegram_alert_queue.put(telegram_alert_msg)
-                        last_telegram_alert_time["time"] = current_time
-                else:
-                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
-                    audio_placeholder.empty()
-                    last_telegram_alert_time["time"] = 0
-            else:
-                alert_placeholder.info("📷 Webcam inactive.")
-                audio_placeholder.empty()
-                last_telegram_alert_time["time"] = 0
-
-            time.sleep(0.5)
-
     def telegram_alert_sender():
         while True:
             try:
                 message = telegram_alert_queue.get(timeout=1)
-                print(f"[DEBUG] Sending telegram message: {message}")
                 send_telegram_alert(message)
             except queue.Empty:
-                pass
+                continue
             except Exception as e:
-                print("[ERROR] Failed to send telegram alert:", e)
+                print("Telegram send error:", e)
 
-    threading.Thread(target=update_ui, daemon=True).start()
     threading.Thread(target=telegram_alert_sender, daemon=True).start()
