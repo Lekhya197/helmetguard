@@ -1,4 +1,4 @@
-upload and webcam code
+
 
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer
