@@ -146,34 +146,19 @@ else:
         "no_helmet_count": 0
     }
 
-    class AlertManager:
+    class CooldownAlertManager:
         def __init__(self, cooldown_period=30):
-            self.triggered = False
             self.last_alert_time = 0
             self.cooldown_period = cooldown_period
-            self.helmet_previously_detected = False
 
-        def should_alert(self, detected_ids, labels):
+        def should_alert(self):
             current_time = time.time()
-            no_helmet = 'no_helmet' in labels
-
-            if 'helmet_on' in labels:
-                self.helmet_previously_detected = True
-
-            if not no_helmet:
-                self.triggered = False
-                return False
-
-            if no_helmet and self.helmet_previously_detected and not self.triggered:
-                if current_time - self.last_alert_time >= self.cooldown_period:
-                    self.triggered = True
-                    self.helmet_previously_detected = False
-                    self.last_alert_time = current_time
-                    return True
-
+            if current_time - self.last_alert_time >= self.cooldown_period:
+                self.last_alert_time = current_time
+                return True
             return False
 
-    alert_manager = AlertManager(cooldown_period=30)
+    alert_manager = CooldownAlertManager(cooldown_period=30)
 
     class VideoProcessor(VideoProcessorBase):
         def recv(self, frame):
@@ -197,7 +182,7 @@ else:
                 alert_state["no_helmet_count"] = 0
 
             if alert_state["no_helmet_count"] >= alert_threshold:
-                if alert_manager.should_alert(set(), labels):
+                if alert_manager.should_alert():
                     send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
                     play_alert_sound()
 
