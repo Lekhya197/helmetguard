@@ -134,7 +134,7 @@ if mode == "Upload Video":
 
 else:  # Webcam mode
     alert_state = {"no_helmet": False}
-    last_telegram_alert_time = 0
+    last_telegram_alert_time = {"time": 0}  # use dict to mutate inside thread
 
     class VideoProcessor:
         def recv(self, frame):
@@ -145,12 +145,14 @@ else:  # Webcam mode
             img = draw_boxes(img, results)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-    webrtc_ctx = webrtc_streamer(key="helmet-detection", video_processor_factory=VideoProcessor,
-                                 media_stream_constraints={"video": True, "audio": False},
-                                 async_processing=True)
+    webrtc_ctx = webrtc_streamer(
+        key="helmet-detection",
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
 
     def update_ui():
-        nonlocal last_telegram_alert_time
         while True:
             if webrtc_ctx.state.playing:
                 current_time = time.time()
@@ -158,17 +160,17 @@ else:  # Webcam mode
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
 
-                    if current_time - last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
+                    if current_time - last_telegram_alert_time["time"] > ALERT_INTERVAL_SECONDS:
                         telegram_alert_queue.put("🚨 Alert: Riders without helmets detected by HelmetGuard AI!")
-                        last_telegram_alert_time = current_time
+                        last_telegram_alert_time["time"] = current_time
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
-                    last_telegram_alert_time = 0  # reset timer
+                    last_telegram_alert_time["time"] = 0
             else:
                 alert_placeholder.info("📷 Webcam inactive.")
                 audio_placeholder.empty()
-                last_telegram_alert_time = 0
+                last_telegram_alert_time["time"] = 0
             time.sleep(0.5)
 
     ui_thread = threading.Thread(target=update_ui, daemon=True)
