@@ -78,4 +78,3 @@ if video_file is not None:
         cap.release()
 else:
     st.info("⬆️ Please upload a video to begin helmet detection.")
-   
