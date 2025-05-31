@@ -139,9 +139,13 @@ if mode == "Upload Video":
 else:  # Webcam mode
     st.header("🟢 Real-Time Helmet Detection (Webcam)")
 
+    # Use globally defined Telegram queue and time tracker if possible
+    if 'telegram_alert_queue' not in st.session_state:
+        st.session_state.telegram_alert_queue = queue.Queue()
+    if 'last_telegram_alert_time' not in st.session_state:
+        st.session_state.last_telegram_alert_time = 0
+
     no_helmet_event = threading.Event()
-    last_telegram_alert_time = {"time": 0}
-    telegram_alert_queue = queue.Queue()
 
     class VideoProcessor:
         def recv(self, frame):
@@ -149,7 +153,6 @@ else:  # Webcam mode
             results = model(img)
             labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
 
-            # Set or clear the helmet event
             if 'no_helmet' in labels:
                 no_helmet_event.set()
             else:
@@ -173,9 +176,11 @@ else:  # Webcam mode
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
 
-                    if current_time - last_telegram_alert_time["time"] > ALERT_INTERVAL_SECONDS:
-                        telegram_alert_queue.put("🚨 Alert: Riders without helmets detected by HelmetGuard AI!")
-                        last_telegram_alert_time["time"] = current_time
+                    if current_time - st.session_state.last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
+                        # 🔍 Debug Print
+                        print("[DEBUG] Putting alert message into queue")
+                        st.session_state.telegram_alert_queue.put("🚨 Alert: Riders without helmets detected by HelmetGuard AI!")
+                        st.session_state.last_telegram_alert_time = current_time
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
@@ -187,10 +192,13 @@ else:  # Webcam mode
     def telegram_alert_sender():
         while True:
             try:
-                message = telegram_alert_queue.get(timeout=1)
+                message = st.session_state.telegram_alert_queue.get(timeout=1)
+                print("[DEBUG] Sending Telegram message:", message)
                 send_telegram_alert(message)
             except queue.Empty:
                 pass
+            except Exception as e:
+                print("[ERROR] Telegram sending failed:", e)
 
     threading.Thread(target=update_ui, daemon=True).start()
     threading.Thread(target=telegram_alert_sender, daemon=True).start()
