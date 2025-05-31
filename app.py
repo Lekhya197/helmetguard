@@ -17,10 +17,13 @@ CHAT_ID = '6674142283'
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 st.title("🪖 HelmetGuard AI - Helmet Detection with YOLOv5")
 
-# Load alert audio
+# Load alert audio file bytes for Streamlit audio player
 alert_audio_file = open("alert.mp3", "rb").read()
 
-# Load YOLOv5 model
+# Initialize pygame mixer once for alert sound playback in webcam mode
+pygame.mixer.init()
+
+# Load YOLOv5 model with cache
 @st.cache_resource
 def load_model():
     return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
@@ -29,27 +32,39 @@ model = load_model()
 
 # Sidebar configuration
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
-alert_threshold = 3
+alert_threshold = 3  # Number of consecutive frames with no_helmet to trigger alert
+cooldown_period = 30  # seconds cooldown between alerts
 
-# Alert State
-class AlertManager:
+# Alert Manager with cooldown for webcam mode
+class CooldownAlertManager:
+    def __init__(self, cooldown_period=30):
+        self.last_alert_time = 0
+        self.cooldown_period = cooldown_period
+
+    def can_alert(self):
+        current_time = time.time()
+        if current_time - self.last_alert_time >= self.cooldown_period:
+            self.last_alert_time = current_time
+            return True
+        return False
+
+# For upload video mode: track if helmet was detected previously to avoid repeated alerts
+class UploadAlertManager:
     def __init__(self):
         self.triggered = False
         self.helmet_previously_detected = False
-        self.last_detected_ids = set()
 
-    def should_alert(self, detected_ids, labels):
+    def should_alert(self, labels):
         no_helmet = 'no_helmet' in labels
+        helmet_on = 'helmet_on' in labels
 
-        if 'helmet_on' in labels:
+        if helmet_on:
             self.helmet_previously_detected = True
 
-        # Reset trigger if helmet is seen
         if not no_helmet:
             self.triggered = False
             return False
 
-        # No helmet and helmet seen before
         if no_helmet and self.helmet_previously_detected and not self.triggered:
             self.triggered = True
             self.helmet_previously_detected = False
@@ -57,8 +72,9 @@ class AlertManager:
 
         return False
 
-alert_manager = AlertManager()
+upload_alert_manager = UploadAlertManager()
 
+# Function to send Telegram message asynchronously
 def send_telegram_message_async(message):
     def send():
         try:
@@ -66,13 +82,15 @@ def send_telegram_message_async(message):
                           data={'chat_id': CHAT_ID, 'text': message})
         except Exception as e:
             st.warning(f"Telegram error: {e}")
-    threading.Thread(target=send).start()
+    threading.Thread(target=send, daemon=True).start()
 
+# Play alert sound for webcam mode (pygame mixer already initialized)
 def play_alert_sound():
-    pygame.mixer.init()
-    pygame.mixer.music.load("alert.mp3")
-    pygame.mixer.music.play()
+    if not pygame.mixer.music.get_busy():
+        pygame.mixer.music.load("alert.mp3")
+        pygame.mixer.music.play()
 
+# Draw bounding boxes on frames
 def draw_boxes(frame, results):
     for *box, conf, cls in results.xyxy[0]:
         if conf < CONFIDENCE_THRESHOLD:
@@ -86,10 +104,8 @@ def draw_boxes(frame, results):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
-# Mode selection
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
-# ------------------ Upload Video ------------------
 if mode == "Upload Video":
     video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
     if video_file is not None:
@@ -112,6 +128,7 @@ if mode == "Upload Video":
                 if not ret:
                     st.info("🎬 Video processing complete.")
                     break
+
                 results = model(frame)
                 detections = results.xyxy[0]
                 detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
@@ -125,7 +142,7 @@ if mode == "Upload Video":
                 helmet_metric.metric("✅ Helmet On", helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
-                if alert_manager.should_alert(set(), labels):
+                if upload_alert_manager.should_alert(labels):
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
                     send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
@@ -136,29 +153,17 @@ if mode == "Upload Video":
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
                 time.sleep(0.03)
+
             cap.release()
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
-# ------------------ Webcam ------------------
-else:
+else:  # Webcam mode
+
+    alert_manager = CooldownAlertManager(cooldown_period=cooldown_period)
     alert_state = {
         "no_helmet_count": 0
     }
-
-    class CooldownAlertManager:
-        def __init__(self, cooldown_period=30):
-            self.last_alert_time = 0
-            self.cooldown_period = cooldown_period
-
-        def should_alert(self):
-            current_time = time.time()
-            if current_time - self.last_alert_time >= self.cooldown_period:
-                self.last_alert_time = current_time
-                return True
-            return False
-
-    alert_manager = CooldownAlertManager(cooldown_period=30)
 
     class VideoProcessor(VideoProcessorBase):
         def recv(self, frame):
@@ -170,8 +175,7 @@ else:
             df = results.pandas().xyxy[0]
 
             filtered = df[
-                ((df['name'] == 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD)) |
-                ((df['name'] != 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD))
+                (df['confidence'] >= CONFIDENCE_THRESHOLD)
             ]
 
             labels = list(filtered['name'])
@@ -182,7 +186,7 @@ else:
                 alert_state["no_helmet_count"] = 0
 
             if alert_state["no_helmet_count"] >= alert_threshold:
-                if alert_manager.should_alert():
+                if alert_manager.can_alert():
                     send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
                     play_alert_sound()
 
