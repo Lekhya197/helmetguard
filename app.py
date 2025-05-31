@@ -1,4 +1,3 @@
-
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 import torch
@@ -37,20 +36,18 @@ class AlertManager:
     def __init__(self):
         self.triggered = False
         self.helmet_previously_detected = False
-        self.last_detected_ids = set()
 
-    def should_alert(self, detected_ids, labels):
+    def should_alert(self, labels):
         no_helmet = 'no_helmet' in labels
+        helmet_on = 'helmet_on' in labels
 
-        if 'helmet_on' in labels:
+        if helmet_on:
             self.helmet_previously_detected = True
 
-        # Reset trigger if helmet is seen
         if not no_helmet:
             self.triggered = False
             return False
 
-        # No helmet and helmet seen before
         if no_helmet and self.helmet_previously_detected and not self.triggered:
             self.triggered = True
             self.helmet_previously_detected = False
@@ -70,9 +67,12 @@ def send_telegram_message_async(message):
     threading.Thread(target=send).start()
 
 def play_alert_sound():
-    pygame.mixer.init()
-    pygame.mixer.music.load("alert.mp3")
-    pygame.mixer.music.play()
+    try:
+        pygame.mixer.init()
+        pygame.mixer.music.load("alert.mp3")
+        pygame.mixer.music.play()
+    except Exception as e:
+        st.warning(f"Audio playback error: {e}")
 
 def draw_boxes(frame, results):
     for *box, conf, cls in results.xyxy[0]:
@@ -90,7 +90,6 @@ def draw_boxes(frame, results):
 # Mode selection
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
-# ------------------ Upload Video ------------------
 if mode == "Upload Video":
     video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
     if video_file is not None:
@@ -126,7 +125,7 @@ if mode == "Upload Video":
                 helmet_metric.metric("✅ Helmet On", helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
-                if alert_manager.should_alert(set(), labels):
+                if alert_manager.should_alert(labels):
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
                     send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
@@ -141,11 +140,16 @@ if mode == "Upload Video":
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
-# ------------------ Webcam ------------------
-else:
+else:  # Webcam mode
     alert_state = {
-        "no_helmet_count": 0
+        "no_helmet_count": 0,
+        "alert_sent": False
     }
+
+    helmet_metric = st.sidebar.empty()
+    no_helmet_metric = st.sidebar.empty()
+    alert_placeholder = st.empty()
+    audio_placeholder = st.empty()
 
     class VideoProcessor(VideoProcessorBase):
         def recv(self, frame):
@@ -156,23 +160,32 @@ else:
             results = model(img_rgb)
             df = results.pandas().xyxy[0]
 
-            filtered = df[
-                ((df['name'] == 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD)) |
-                ((df['name'] != 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD))
-            ]
+            filtered = df[df['confidence'] >= CONFIDENCE_THRESHOLD]
 
             labels = list(filtered['name'])
 
-            if 'no_helmet' in labels:
+            helmet_count = labels.count('helmet_on')
+            no_helmet_count = labels.count('no_helmet')
+
+            # Update counts on sidebar (thread-safe via Streamlit empty placeholders)
+            helmet_metric.metric("✅ Helmet On", helmet_count)
+            no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
+
+            # Manage alert state counts for triggering alerts
+            if no_helmet_count > 0:
                 alert_state["no_helmet_count"] += 1
             else:
                 alert_state["no_helmet_count"] = 0
+                alert_state["alert_sent"] = False  # reset when no violation
 
-            if alert_state["no_helmet_count"] >= alert_threshold:
-                if alert_manager.should_alert(set(), labels):
+            # Trigger alert if threshold exceeded and not already sent
+            if alert_state["no_helmet_count"] >= alert_threshold and not alert_state["alert_sent"]:
+                if alert_manager.should_alert(labels):
                     send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
                     play_alert_sound()
+                    alert_state["alert_sent"] = True
 
+            # Draw boxes
             for _, row in filtered.iterrows():
                 xmin, ymin, xmax, ymax = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
                 label = f"{row['name']} {row['confidence']:.2f}"
@@ -181,9 +194,6 @@ else:
                 cv2.putText(img_bgr, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
-
-    alert_placeholder = st.empty()
-    audio_placeholder = st.empty()
 
     ctx = webrtc_streamer(
         key="helmet-detection",
