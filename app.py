@@ -9,6 +9,9 @@ import time
 import requests
 import queue
 
+ALERT_INTERVAL_SECONDS = 30  # send telegram alert every 30 seconds if no helmet detected
+telegram_alert_queue = queue.Queue()
+
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
 # Telegram Bot Config - replace with your actual bot token and chat ID
@@ -132,9 +135,10 @@ if mode == "Upload Video":
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
+
 else:  # Webcam mode
     alert_state = {"no_helmet": False}
-    last_telegram_alert_time = {"time": 0}  # use dict to mutate inside thread
+    last_telegram_alert_time = {"time": 0}
 
     class VideoProcessor:
         def recv(self, frame):
@@ -173,5 +177,16 @@ else:  # Webcam mode
                 last_telegram_alert_time["time"] = 0
             time.sleep(0.5)
 
+    def telegram_alert_sender():
+        while True:
+            message = telegram_alert_queue.get()
+            if message:
+                send_telegram_alert(message)
+            time.sleep(1)  # slight delay to avoid spamming
+
+    # Start both threads
     ui_thread = threading.Thread(target=update_ui, daemon=True)
     ui_thread.start()
+
+    telegram_thread = threading.Thread(target=telegram_alert_sender, daemon=True)
+    telegram_thread.start()
