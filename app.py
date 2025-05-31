@@ -57,12 +57,15 @@ if mode == "Upload Video":
             no_helmet_metric = st.sidebar.empty()
             alert_placeholder = st.sidebar.empty()
             audio_placeholder = st.empty()
-            
+
+            alert_triggered = False  # Track alert state
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     st.info("🎬 Video processing complete.")
                     break
+
                 results = model(frame)
                 detections = results.xyxy[0]
                 detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
@@ -77,17 +80,22 @@ if mode == "Upload Video":
                 no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
                 if no_helmet_count > 0:
-                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                    if not alert_triggered:
+                        alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                        audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                        alert_triggered = True
                 else:
-                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
-                    audio_placeholder.empty()
+                    if alert_triggered:
+                        alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                        audio_placeholder.empty()
+                        alert_triggered = False
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
 
                 time.sleep(0.03)
             cap.release()
+
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
