@@ -8,71 +8,54 @@ import time
 import threading
 import pygame
 import requests
-import math
 
+# Telegram Bot Info
 BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
 CHAT_ID = '6674142283'
 
+# Streamlit Config
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 st.title("🪖 HelmetGuard AI - Helmet Detection with YOLOv5")
 
+# Load alert audio
 alert_audio_file = open("alert.mp3", "rb").read()
 
+# Load YOLOv5 model
 @st.cache_resource
 def load_model():
     return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
 
 model = load_model()
 
+# Sidebar configuration
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
-alert_threshold = 3  # Frames with detection to trigger alert
+alert_threshold = 3
 
+# Alert State
 class AlertManager:
     def __init__(self):
-        self.triggered_ids = set()
+        self.triggered = False
         self.helmet_previously_detected = False
+        self.last_detected_ids = set()
 
-    def _center(self, box):
-        x1, y1, x2, y2 = box
-        return ((x1 + x2) // 2, (y1 + y2) // 2)
+    def should_alert(self, detected_ids, labels):
+        no_helmet = 'no_helmet' in labels
 
-    def _is_new_detection(self, center, known_centers, distance_threshold=50):
-        for c in known_centers:
-            dist = math.hypot(center[0] - c[0], center[1] - c[1])
-            if dist < distance_threshold:
-                return False
-        return True
-
-    def update_and_check_alert(self, detections):
-        no_helmet_boxes = [box for box, label in detections if label == 'no_helmet']
-        helmet_present = any(label == 'helmet_on' for _, label in detections)
-
-        if helmet_present:
+        if 'helmet_on' in labels:
             self.helmet_previously_detected = True
 
-        alert_needed = False
+        # Reset trigger if helmet is seen
+        if not no_helmet:
+            self.triggered = False
+            return False
 
-        # Track new no_helmet detections by center location
-        new_ids = set()
-        known_centers = [self._center(box) for box in self.triggered_ids]
-
-        for box in no_helmet_boxes:
-            center = self._center(box)
-            if self._is_new_detection(center, known_centers):
-                new_ids.add(tuple(box))
-                known_centers.append(center)
-
-        if new_ids and self.helmet_previously_detected:
-            alert_needed = True
-            self.triggered_ids.update(new_ids)
+        # No helmet and helmet seen before
+        if no_helmet and self.helmet_previously_detected and not self.triggered:
+            self.triggered = True
             self.helmet_previously_detected = False
+            return True
 
-        # Reset if no no_helmet detected at all
-        if not no_helmet_boxes:
-            self.triggered_ids.clear()
-            alert_needed = False
-
-        return alert_needed
+        return False
 
 alert_manager = AlertManager()
 
@@ -103,8 +86,10 @@ def draw_boxes(frame, results):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
+# Mode selection
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
+# ------------------ Upload Video ------------------
 if mode == "Upload Video":
     video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
     if video_file is not None:
@@ -127,12 +112,10 @@ if mode == "Upload Video":
                 if not ret:
                     st.info("🎬 Video processing complete.")
                     break
-
                 results = model(frame)
-                detections_raw = results.xyxy[0]
-                filtered_detections = [(list(map(int, box[:4])), model.names[int(cls)]) 
-                                       for *box, conf, cls in detections_raw if conf >= CONFIDENCE_THRESHOLD]
-                labels = [label for _, label in filtered_detections]
+                detections = results.xyxy[0]
+                detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
+                labels = [model.names[int(cls)] for cls in detections[:, 5]]
 
                 helmet_count = labels.count('helmet_on')
                 no_helmet_count = labels.count('no_helmet')
@@ -142,17 +125,13 @@ if mode == "Upload Video":
                 helmet_metric.metric("✅ Helmet On", helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
-                if alert_manager.update_and_check_alert(filtered_detections):
+                if alert_manager.should_alert(set(), labels):
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
                     send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
                 else:
-                    # Show all clear only if no no_helmet detected
-                    if no_helmet_count == 0:
-                        alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
-                        audio_placeholder.empty()
-                    else:
-                        alert_placeholder.info("⚠️ Detecting, waiting for stable alert...")
+                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                    audio_placeholder.empty()
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
@@ -161,9 +140,9 @@ if mode == "Upload Video":
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
+# ------------------ Webcam ------------------
 else:
     alert_state = {
-        "no_helmet_centers": set(),
         "no_helmet_count": 0
     }
 
@@ -181,50 +160,24 @@ else:
                 ((df['name'] != 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD))
             ]
 
-            detections = []
-            for _, row in filtered.iterrows():
-                box = [int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])]
-                label = row['name']
-                detections.append((box, label))
+            labels = list(filtered['name'])
 
-            no_helmet_boxes = [box for box, label in detections if label == 'no_helmet']
-            helmet_present = any(label == 'helmet_on' for _, label in detections)
-
-            def center(box):
-                x1, y1, x2, y2 = box
-                return ((x1 + x2) // 2, (y1 + y2) // 2)
-
-            def is_new(center, known_centers, dist_threshold=50):
-                for c in known_centers:
-                    dist = math.hypot(center[0] - c[0], center[1] - c[1])
-                    if dist < dist_threshold:
-                        return False
-                return True
-
-            new_centers = set()
-            for box in no_helmet_boxes:
-                c = center(box)
-                if is_new(c, alert_state["no_helmet_centers"]):
-                    new_centers.add(c)
-
-            if new_centers and helmet_present:
-                alert_state["no_helmet_centers"].update(new_centers)
-                alert_state["no_helmet_count"] = 0  # reset frame count after new detection
-                send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
-                play_alert_sound()
-
-            if no_helmet_boxes:
+            if 'no_helmet' in labels:
                 alert_state["no_helmet_count"] += 1
             else:
                 alert_state["no_helmet_count"] = 0
-                alert_state["no_helmet_centers"].clear()  # reset when no no_helmet detected
 
-            for box, label in detections:
-                xmin, ymin, xmax, ymax = box
-                color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
-                label_text = f"{label} {round(df.loc[(df['xmin'] == xmin) & (df['ymin'] == ymin), 'confidence'].values[0], 2):.2f}"
+            if alert_state["no_helmet_count"] >= alert_threshold:
+                if alert_manager.should_alert(set(), labels):
+                    send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
+                    play_alert_sound()
+
+            for _, row in filtered.iterrows():
+                xmin, ymin, xmax, ymax = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
+                label = f"{row['name']} {row['confidence']:.2f}"
+                color = (0, 255, 0) if row['name'] == 'helmet_on' else (0, 0, 255)
                 cv2.rectangle(img_bgr, (xmin, ymin), (xmax, ymax), color, 2)
-                cv2.putText(img_bgr, label_text, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.putText(img_bgr, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
             return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
 
@@ -242,7 +195,7 @@ else:
     def update_ui():
         while True:
             if ctx.state.playing:
-                if alert_state["no_helmet_centers"]:
+                if alert_state["no_helmet_count"] >= alert_threshold:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
                 else:
