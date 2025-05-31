@@ -77,50 +77,45 @@ if mode == "Upload Video":
         cap = cv2.VideoCapture(temp_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         delay = 1.0 / fps if fps > 0 else 0.03
-        queue = Queue()
 
-        def process_frames():
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    queue.put(("end", None, None, None))
-                    break
-
-                results = model(frame)
-                df = results.pandas().xyxy[0]
-                df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
-                df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
-
-                frame = draw_boxes(frame, pd.concat([df_helmet, df_no_helmet]))
-                queue.put(("frame", cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), len(df_helmet), len(df_no_helmet)))
-                time.sleep(delay)
-
-            cap.release()
-            os.remove(temp_path)
-
-        threading.Thread(target=process_frames, daemon=True).start()
         placeholder = st.empty()
+        frame_count = 0
 
-        while True:
-            if not queue.empty():
-                msg, frame, h_count, nh_count = queue.get()
-                if msg == "end":
-                    status_message.success("✅ Processing Complete")
-                    break
-                placeholder.image(frame, channels="RGB")
-                helmet_metric.metric("✅ Helmet On", h_count)
-                no_helmet_metric.metric("🚨 No Helmet", nh_count)
-                if nh_count > 0:
-                    status_message.error("❌ No Helmet Detected")
-                    alert_placeholder.error("⚠️ Alert Triggered")
-                    if not st.session_state.alert_sent:
-                        if send_telegram_alert(f"⚠️ ALERT: {nh_count} rider(s) without helmet detected!"):
-                            st.session_state.alert_sent = True
-                else:
-                    status_message.success("✅ All Safe")
-                    st.session_state.alert_sent = False
-            time.sleep(0.01)
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
+            results = model(frame)
+            df = results.pandas().xyxy[0]
+
+            df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
+            df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
+
+            frame = draw_boxes(frame, pd.concat([df_helmet, df_no_helmet]))
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            placeholder.image(frame_rgb, channels="RGB")
+
+            h_count = len(df_helmet)
+            nh_count = len(df_no_helmet)
+            helmet_metric.metric("✅ Helmet On", h_count)
+            no_helmet_metric.metric("🚨 No Helmet", nh_count)
+
+            if nh_count > 0:
+                status_message.error("❌ No Helmet Detected")
+                alert_placeholder.error("⚠️ Alert Triggered")
+                if not st.session_state.alert_sent:
+                    if send_telegram_alert(f"⚠️ ALERT: {nh_count} rider(s) without helmet detected!"):
+                        st.session_state.alert_sent = True
+            else:
+                status_message.success("✅ All Safe")
+                st.session_state.alert_sent = False
+
+            time.sleep(delay)
+
+        cap.release()
+        os.remove(temp_path)
+        status_message.success("✅ Video Processing Complete")
     else:
         st.info("⬆️ Upload a video to begin")
 
