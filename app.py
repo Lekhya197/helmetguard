@@ -1,5 +1,5 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
 import cv2
 import torch
 import av
@@ -9,12 +9,10 @@ import time
 import requests
 import queue
 
-ALERT_INTERVAL_SECONDS = 30  # send telegram alert every 30 seconds if no helmet detected
-telegram_alert_queue = queue.Queue()
+ALERT_INTERVAL_SECONDS = 10
 
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
-# Telegram Bot Config - replace with your actual bot token and chat ID
 TELEGRAM_BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
 TELEGRAM_CHAT_ID = '6674142283'
 
@@ -31,13 +29,12 @@ def send_telegram_alert(message):
 
 @st.cache_resource(show_spinner=True)
 def load_model():
-    model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
+    model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=False)
     return model
 
 model = load_model()
 
 CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
-ALERT_INTERVAL_SECONDS = 10  # Interval between telegram alerts
 
 alert_audio_file = open("alert.mp3", "rb").read()
 
@@ -61,13 +58,12 @@ def draw_boxes(frame, results):
 alert_placeholder = st.empty()
 audio_placeholder = st.empty()
 
-# Queue and thread for async Telegram alerts
 telegram_alert_queue = queue.Queue()
 
 def telegram_alert_worker():
     while True:
         message = telegram_alert_queue.get()
-        if message is None:  # Sentinel to stop the thread if needed
+        if message is None:
             break
         send_telegram_alert(message)
         telegram_alert_queue.task_done()
@@ -92,6 +88,7 @@ if mode == "Upload Video":
             audio_placeholder = st.empty()
 
             last_telegram_alert_time = 0
+            alert_active = False
 
             while True:
                 ret, frame = cap.read()
@@ -117,32 +114,33 @@ if mode == "Upload Video":
                 if no_helmet_count > 0:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
-
-                    if current_time - last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
+                    if not alert_active or (current_time - last_telegram_alert_time > ALERT_INTERVAL_SECONDS):
                         telegram_alert_queue.put("🚨 Alert: Riders without helmets detected in uploaded video by HelmetGuard AI!")
                         last_telegram_alert_time = current_time
+                        alert_active = True
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
-                    last_telegram_alert_time = 0  # reset timer
+                    alert_active = False
+                    last_telegram_alert_time = 0
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
 
-                time.sleep(0.03)  # To reduce CPU usage slightly, but can be adjusted or removed
+                time.sleep(0.03)
 
             cap.release()
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
-
 else:
     alert_state = {
         "no_helmet_count": 0,
-        "alert_triggered": False
+        "alert_triggered": False,
+        "last_alert_time": 0
     }
 
-    class VideoProcessor(VideoProcessorBase):
+    class VideoProcessor:
         def recv(self, frame):
             img_bgr = frame.to_ndarray(format="bgr24")
             img_bgr = cv2.resize(img_bgr, (1280, 720))
@@ -153,7 +151,7 @@ else:
 
             filtered = df[
                 ((df['name'] == 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD)) |
-                ((df['name'] != 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD))
+                ((df['confidence'] >= CONFIDENCE_THRESHOLD) & (df['name'] != 'no_helmet'))
             ]
 
             labels = list(filtered['name'])
@@ -164,13 +162,15 @@ else:
                 alert_state["no_helmet_count"] = 0
                 alert_state["alert_triggered"] = False
 
-            # MOVE ALERT LOGIC HERE
-            if alert_state["no_helmet_count"] >= alert_threshold and not alert_state["alert_triggered"]:
-                alert_state["alert_triggered"] = True
-                send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
-                play_alert_sound()  # play mp3 alert sound
+            current_time = time.time()
+            if alert_state["no_helmet_count"] >= 3 and not alert_state["alert_triggered"]:
+                if current_time - alert_state["last_alert_time"] > ALERT_INTERVAL_SECONDS:
+                    alert_state["alert_triggered"] = True
+                    alert_state["last_alert_time"] = current_time
+                    telegram_alert_queue.put("🚨 Helmet violation detected in webcam feed!")
+            elif alert_state["no_helmet_count"] == 0:
+                alert_state["alert_triggered"] = False
 
-            # Draw bounding boxes
             for _, row in filtered.iterrows():
                 xmin, ymin, xmax, ymax = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
                 label = f"{row['name']} {row['confidence']:.2f}"
@@ -180,10 +180,6 @@ else:
 
             return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
 
-    # UI placeholders
-    alert_placeholder = st.empty()
-    audio_placeholder = st.empty()
-
     ctx = webrtc_streamer(
         key="helmet-detection",
         mode=WebRtcMode.SENDRECV,
@@ -192,11 +188,10 @@ else:
         async_processing=True
     )
 
-    # UI Updater thread (only shows alert box + audio)
     def update_ui():
         while True:
             if ctx.state.playing:
-                if alert_state["no_helmet_count"] >= alert_threshold:
+                if alert_state["no_helmet_count"] >= 3:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
                 else:
