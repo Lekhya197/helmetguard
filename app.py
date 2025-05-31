@@ -137,15 +137,24 @@ if mode == "Upload Video":
 
 
 else:  # Webcam mode
-    alert_state = {"no_helmet": False}
+    st.header("🟢 Real-Time Helmet Detection (Webcam)")
+
+    no_helmet_event = threading.Event()
     last_telegram_alert_time = {"time": 0}
+    telegram_alert_queue = queue.Queue()
 
     class VideoProcessor:
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
             results = model(img)
             labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
-            alert_state["no_helmet"] = labels.count('no_helmet') > 0
+
+            # Set or clear the helmet event
+            if 'no_helmet' in labels:
+                no_helmet_event.set()
+            else:
+                no_helmet_event.clear()
+
             img = draw_boxes(img, results)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -160,7 +169,7 @@ else:  # Webcam mode
         while True:
             if webrtc_ctx.state.playing:
                 current_time = time.time()
-                if alert_state["no_helmet"]:
+                if no_helmet_event.is_set():
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
 
@@ -170,11 +179,9 @@ else:  # Webcam mode
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
-                    last_telegram_alert_time["time"] = 0
             else:
                 alert_placeholder.info("📷 Webcam inactive.")
                 audio_placeholder.empty()
-                last_telegram_alert_time["time"] = 0
             time.sleep(0.5)
 
     def telegram_alert_sender():
@@ -185,6 +192,5 @@ else:  # Webcam mode
             except queue.Empty:
                 pass
 
-    # Start both threads
     threading.Thread(target=update_ui, daemon=True).start()
     threading.Thread(target=telegram_alert_sender, daemon=True).start()
