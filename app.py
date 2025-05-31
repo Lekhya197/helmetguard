@@ -186,43 +186,43 @@ else:
             self.last_alert_time = 0
             self.alert_cooldown = 5  # seconds
             self.consecutive_no_helmet_frames = 0
-            
-        def recv(self, frame):
-    img_bgr = frame.to_ndarray(format="bgr24")
-    img_bgr = cv2.resize(img_bgr, (1280, 720))
-    
-    # Process frame
-    results = model(img_bgr)
-    detections = process_detections(results)
-    
-    # Count helmets
-    helmet_count = sum(1 for d in detections if d['label'] == 'helmet_on')
-    no_helmet_count = sum(1 for d in detections if d['label'] == 'no_helmet')
-    
-    # Update helmet status
-    alert_manager.update_helmet_status(helmet_count > 0)
-    
-    # Track consecutive no-helmet frames
-    if no_helmet_count > 0:
-        self.consecutive_no_helmet_frames += 1
-    else:
-        self.consecutive_no_helmet_frames = 0
-    
-    # Check for alerts
-    current_time = time.time()
-    if (self.consecutive_no_helmet_frames >= alert_threshold and 
-        alert_manager.should_alert(detections) and
-        current_time - self.last_alert_time > self.alert_cooldown):
         
-        send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
-        play_alert_sound()
-        self.last_alert_time = current_time
-    
-    # Draw boxes and convert to RGB
-    img_bgr = draw_boxes(img_bgr, detections)
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    
-    return av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
+        def recv(self, frame):
+            img_bgr = frame.to_ndarray(format="bgr24")
+            img_bgr = cv2.resize(img_bgr, (1280, 720))
+            
+            # Process frame
+            results = model(img_bgr)
+            detections = process_detections(results)
+            
+            # Count helmets
+            helmet_count = sum(1 for d in detections if d['label'] == 'helmet_on')
+            no_helmet_count = sum(1 for d in detections if d['label'] == 'no_helmet')
+            
+            # Update helmet status
+            alert_manager.update_helmet_status(helmet_count > 0)
+            
+            # Track consecutive no-helmet frames
+            if no_helmet_count > 0:
+                self.consecutive_no_helmet_frames += 1
+            else:
+                self.consecutive_no_helmet_frames = 0
+            
+            # Check for alerts
+            current_time = time.time()
+            if (self.consecutive_no_helmet_frames >= alert_threshold and 
+                alert_manager.should_alert(detections) and
+                current_time - self.last_alert_time > self.alert_cooldown):
+                
+                send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
+                play_alert_sound()
+                self.last_alert_time = current_time
+            
+            # Draw boxes and convert to RGB
+            img_bgr = draw_boxes(img_bgr, detections)
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            
+            return av.VideoFrame.from_ndarray(img_rgb, format="rgb24")
 
     alert_placeholder = st.empty()
     audio_placeholder = st.empty()
