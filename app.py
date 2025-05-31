@@ -10,8 +10,8 @@ import pygame
 import requests
 
 # Telegram Bot Info
-BOT_TOKEN = 'YOUR_BOT_TOKEN'
-CHAT_ID = 'YOUR_CHAT_ID'
+BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
+CHAT_ID = '6674142283'
 
 # Streamlit Config
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
