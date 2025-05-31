@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 from streamlit_webrtc import webrtc_streamer
 import cv2
@@ -76,15 +74,18 @@ if mode == "Upload Video":
 
                 frame = draw_boxes(frame, results)
 
+                # Always show helmet count (even if zero)
                 helmet_metric.metric("✅ Helmet On", helmet_count)
-                no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
+                # Show no helmet count only if > 0, else clear
                 if no_helmet_count > 0:
+                    no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
                     if not alert_triggered:
                         alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                         audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
                         alert_triggered = True
                 else:
+                    no_helmet_metric.empty()
                     if alert_triggered:
                         alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                         audio_placeholder.empty()
@@ -109,6 +110,7 @@ else:  # Webcam mode
             results = model(img)
             labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
             alert_state["no_helmet"] = labels.count('no_helmet') > 0
+            alert_state["helmet_on"] = labels.count('helmet_on')
             img = draw_boxes(img, results)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -116,20 +118,34 @@ else:  # Webcam mode
                                  media_stream_constraints={"video": True, "audio": False},
                                  async_processing=True)
 
+    helmet_metric = st.sidebar.empty()
+    no_helmet_metric = st.sidebar.empty()
+
     def update_ui():
+        alert_triggered = False
         while True:
             if webrtc_ctx.state.playing:
+                helmet_metric.metric("✅ Helmet On", alert_state.get("helmet_on", 0))
+
                 if alert_state["no_helmet"]:
-                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                    no_helmet_count = 1  # just show alert and count 1, or customize as needed
+                    no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
+                    if not alert_triggered:
+                        alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                        audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                        alert_triggered = True
                 else:
-                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
-                    audio_placeholder.empty()
+                    no_helmet_metric.empty()
+                    if alert_triggered:
+                        alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                        audio_placeholder.empty()
+                        alert_triggered = False
             else:
+                helmet_metric.empty()
+                no_helmet_metric.empty()
                 alert_placeholder.info("📷 Webcam inactive.")
                 audio_placeholder.empty()
             time.sleep(0.5)
 
-    import threading
     thread = threading.Thread(target=update_ui, daemon=True)
     thread.start()
