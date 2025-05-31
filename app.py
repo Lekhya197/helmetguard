@@ -6,9 +6,15 @@ import av
 import threading
 import numpy as np
 import time
+import requests
 
 st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
+# === Telegram Bot Configuration ===
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
+
+# === Load YOLOv5 Model ===
 @st.cache_resource(show_spinner=True)
 def load_model():
     model = torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
@@ -92,6 +98,7 @@ if mode == "Upload Video":
 else:  # Webcam mode
 
     alert_state = {"no_helmet": False}
+    telegram_alert_sent = {"sent": False}  # Tracks if message was sent
 
     class VideoProcessor:
         def recv(self, frame):
@@ -112,14 +119,28 @@ else:  # Webcam mode
                 if alert_state["no_helmet"]:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+
+                    if not telegram_alert_sent["sent"]:
+                        try:
+                            message = "🚨 HelmetGuard Alert: Rider without helmet detected on webcam!"
+                            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                            payload = {"chat_id": CHAT_ID, "text": message}
+                            response = requests.post(url, data=payload)
+                            if response.status_code == 200:
+                                telegram_alert_sent["sent"] = True
+                                print("✅ Telegram alert sent.")
+                            else:
+                                print("❌ Failed to send Telegram alert:", response.text)
+                        except Exception as e:
+                            print("❌ Telegram exception:", e)
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
+                    telegram_alert_sent["sent"] = False  # Reset once helmets are back
             else:
                 alert_placeholder.info("📷 Webcam inactive.")
                 audio_placeholder.empty()
             time.sleep(0.5)
 
-    import threading
     thread = threading.Thread(target=update_ui, daemon=True)
     thread.start()
