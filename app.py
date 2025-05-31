@@ -12,7 +12,7 @@ st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
 
 # Telegram Bot Config - replace with your actual bot token and chat ID
 TELEGRAM_BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
-TELEGRAM_CHAT_ID =  '6674142283'
+TELEGRAM_CHAT_ID = '6674142283'
 
 def send_telegram_alert(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -57,6 +57,8 @@ alert_placeholder = st.empty()
 audio_placeholder = st.empty()
 
 if mode == "Upload Video":
+    telegram_alert_sent = {"sent": False}  # Alert flag for upload video mode
+
     video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
     if video_file is not None:
         temp_video_path = "temp_video.mp4"
@@ -76,6 +78,7 @@ if mode == "Upload Video":
                 ret, frame = cap.read()
                 if not ret:
                     st.info("🎬 Video processing complete.")
+                    telegram_alert_sent["sent"] = False  # reset flag after video ends
                     break
                 results = model(frame)
                 detections = results.xyxy[0]
@@ -93,9 +96,14 @@ if mode == "Upload Video":
                 if no_helmet_count > 0:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+
+                    if not telegram_alert_sent["sent"]:
+                        send_telegram_alert("🚨 Alert: Riders without helmets detected in uploaded video by HelmetGuard AI!")
+                        telegram_alert_sent["sent"] = True
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
+                    telegram_alert_sent["sent"] = False
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
