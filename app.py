@@ -108,7 +108,7 @@ if mode == "Upload Video":
 else:  # Webcam mode
 
     alert_state = {"no_helmet": False}
-    telegram_alert_sent = False
+    telegram_alert_sent = {"sent": False}
 
     class VideoProcessor:
         def recv(self, frame):
@@ -124,24 +124,23 @@ else:  # Webcam mode
                                  async_processing=True)
 
     def update_ui():
-        nonlocal telegram_alert_sent
         while True:
             if webrtc_ctx.state.playing:
                 if alert_state["no_helmet"]:
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
 
-                    if not telegram_alert_sent:
+                    if not telegram_alert_sent["sent"]:
                         send_telegram_alert("🚨 Alert: Riders without helmets detected by HelmetGuard AI!")
-                        telegram_alert_sent = True
+                        telegram_alert_sent["sent"] = True
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
-                    telegram_alert_sent = False
+                    telegram_alert_sent["sent"] = False
             else:
                 alert_placeholder.info("📷 Webcam inactive.")
                 audio_placeholder.empty()
-                telegram_alert_sent = False
+                telegram_alert_sent["sent"] = False
             time.sleep(0.5)
 
     thread = threading.Thread(target=update_ui, daemon=True)
