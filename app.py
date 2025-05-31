@@ -55,9 +55,6 @@ def draw_boxes(frame, results):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
-alert_placeholder = st.empty()
-audio_placeholder = st.empty()
-
 telegram_alert_queue = queue.Queue()
 
 def telegram_alert_worker():
@@ -120,17 +117,16 @@ if mode == "Upload Video":
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
-                    last_telegram_alert_time = 0  # reset timer
+                    last_telegram_alert_time = 0
 
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame_placeholder.image(frame_rgb, channels="RGB")
 
-                time.sleep(0.03)  # To reduce CPU usage slightly, but can be adjusted or removed
+                time.sleep(0.03)
 
             cap.release()
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
-
 
 else:
     alert_state = {
@@ -187,6 +183,9 @@ else:
         async_processing=True
     )
 
+    alert_placeholder = st.empty()
+    audio_placeholder = st.empty()
+
     def update_ui():
         while True:
             if ctx.state.playing:
@@ -201,4 +200,5 @@ else:
                 audio_placeholder.empty()
             time.sleep(0.5)
 
-    threading.Thread(target=update_ui, daemon=True).start()
+    ui_thread = threading.Thread(target=update_ui, daemon=True)
+    ui_thread.start()
