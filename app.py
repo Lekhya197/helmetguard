@@ -46,8 +46,12 @@ def send_telegram_alert(message: str):
 mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
 alert_placeholder = st.sidebar.empty()
-helmet_metric = st.sidebar.empty()
-no_helmet_metric = st.sidebar.empty()
+
+# Create two columns in sidebar for metrics side-by-side
+col1, col2 = st.sidebar.columns(2)
+
+helmet_metric = col1.empty()
+no_helmet_metric = col2.empty()
 
 # State to avoid spamming telegram alerts
 alert_sent_state = {"sent": False}
@@ -87,20 +91,16 @@ if mode == "Upload Video":
 
                 frame = draw_boxes(frame, df)
 
-                if helmet_count > 0:
-                    helmet_metric.metric("✅ Helmet On", int(helmet_count))
-                else:
-                    helmet_metric.empty()
+                # Always show metrics side by side
+                helmet_metric.metric("✅ Helmet On", int(helmet_count))
+                no_helmet_metric.metric("🚨 No Helmet", int(no_helmet_count))
 
                 if helmet_count == 0 and no_helmet_count > 0:
-                    no_helmet_metric.metric("🚨 No Helmet", int(no_helmet_count))
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-
                     if not alert_sent_state["sent"]:
                         send_telegram_alert(f"⚠️ ALERT: {no_helmet_count} rider(s) without helmet detected!")
                         alert_sent_state["sent"] = True
                 else:
-                    no_helmet_metric.empty()
                     alert_placeholder.empty()
                     alert_sent_state["sent"] = False
 
@@ -148,20 +148,16 @@ else:  # Webcam Mode
                 no_helmet_count = alert_state["no_helmet_count"]
                 no_helmet = alert_state["no_helmet"]
 
-                if helmet_count > 0:
-                    helmet_metric.metric("✅ Helmet On", int(helmet_count))
-                else:
-                    helmet_metric.empty()
+                # Always show metrics side by side in sidebar
+                helmet_metric.metric("✅ Helmet On", int(helmet_count))
+                no_helmet_metric.metric("🚨 No Helmet", int(no_helmet_count))
 
                 if no_helmet:
-                    no_helmet_metric.metric("🚨 No Helmet", int(no_helmet_count))
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-
                     if not alert_sent_state["sent"]:
                         send_telegram_alert(f"⚠️ ALERT: {no_helmet_count} rider(s) without helmet detected!")
                         alert_sent_state["sent"] = True
                 else:
-                    no_helmet_metric.empty()
                     alert_placeholder.empty()
                     alert_sent_state["sent"] = False
             else:
