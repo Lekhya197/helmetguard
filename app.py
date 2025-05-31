@@ -51,9 +51,6 @@ with st.sidebar:
     conf_helmet = st.slider("Helmet confidence", 0.0, 1.0, 0.4, 0.01)
     conf_no_helmet = st.slider("No helmet confidence", 0.0, 1.0, 0.5, 0.01)
     
-    # Index threshold
-    indexed_on = st.slider("Indexed_on threshold", 0.0, 1.0, 0.85, 0.01)
-    
     st.markdown("---")
     
     # Mode selection
@@ -81,6 +78,8 @@ def draw_boxes(frame, results_df):
 # State to avoid spamming alerts
 if 'alert_sent' not in st.session_state:
     st.session_state.alert_sent = False
+if 'last_alert_time' not in st.session_state:
+    st.session_state.last_alert_time = 0
 
 # Main processing based on mode
 if mode == "Upload Video":
@@ -177,13 +176,15 @@ else:  # Webcam Mode
             # Filter by confidence thresholds
             df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
             df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
+            df_person = df[df['name'] == 'person']  # Detect persons
             
             self.helmet_count = len(df_helmet)
             self.no_helmet_count = len(df_no_helmet)
-            self.alert_triggered = (self.no_helmet_count > 0)
+            self.person_count = len(df_person)
+            self.alert_triggered = (self.no_helmet_count > 0) or (self.person_count > 0)
             
-            # Draw boxes
-            img = draw_boxes(img, pd.concat([df_helmet, df_no_helmet]))
+            # Draw boxes for all detections
+            img = draw_boxes(img, pd.concat([df_helmet, df_no_helmet, df_person]))
             return av.VideoFrame.from_ndarray(img, format="bgr24")
     
     webrtc_ctx = webrtc_streamer(
@@ -202,12 +203,23 @@ else:  # Webcam Mode
                 helmet_metric.metric("✅ Helmet On", processor.helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", processor.no_helmet_count)
                 
-                # Check for alerts
+                # Check for alerts (either no helmet or person detected)
+                current_time = time.time()
                 if processor.alert_triggered:
-                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-                    if not st.session_state.alert_sent:
-                        if send_telegram_alert(f"⚠️ ALERT: {processor.no_helmet_count} rider(s) without helmet detected!"):
+                    alert_message = ""
+                    if processor.no_helmet_count > 0:
+                        alert_message += f"⚠️ {processor.no_helmet_count} rider(s) without helmet detected! "
+                    if processor.person_count > 0:
+                        alert_message += f"👤 {processor.person_count} person(s) detected!"
+                    
+                    alert_placeholder.error(alert_message.strip())
+                    
+                    # Send Telegram alert (throttled to avoid spamming)
+                    if (not st.session_state.alert_sent or 
+                        (current_time - st.session_state.last_alert_time) > 60):  # 60 seconds cooldown
+                        if send_telegram_alert(alert_message.strip()):
                             st.session_state.alert_sent = True
+                            st.session_state.last_alert_time = current_time
                 else:
                     alert_placeholder.empty()
                     st.session_state.alert_sent = False
