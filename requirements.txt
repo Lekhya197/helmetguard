@@ -12,4 +12,5 @@ seaborn
 ultralytics
 pygame
 requests
+deep_sort_realtime
 
