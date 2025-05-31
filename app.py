@@ -146,17 +146,42 @@ else:  # Webcam mode
         st.session_state.last_telegram_alert_time = 0.0
 
     no_helmet_event = threading.Event()
+    helmet_detected_event = threading.Event()
 
     class VideoProcessor:
+        def __init__(self):
+            self.last_alert_time = 0
+            self.alert_sent = False
+
         def recv(self, frame):
             img = frame.to_ndarray(format="bgr24")
             results = model(img)
-            labels = [model.names[int(cls)] for cls in results.xyxy[0][:, 5]]
+            detections = results.xyxy[0]
+            detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
+            
+            labels = [model.names[int(cls)] for cls in detections[:, 5]]
+            helmet_count = labels.count('helmet_on')
+            no_helmet_count = labels.count('no_helmet')
 
-            if 'no_helmet' in labels:
+            current_time = time.time()
+            
+            if no_helmet_count > 0:
                 no_helmet_event.set()
+                helmet_detected_event.clear()
+                
+                # Send Telegram alert if enough time has passed since last alert
+                if current_time - self.last_alert_time > ALERT_INTERVAL_SECONDS:
+                    message = "🚨 ALERT: Riders without helmets detected in live webcam feed!"
+                    st.session_state.telegram_alert_queue.put(message)
+                    self.last_alert_time = current_time
+                    self.alert_sent = True
             else:
                 no_helmet_event.clear()
+                helmet_detected_event.set()
+                if self.alert_sent:
+                    message = "✅ ALERT CLEARED: All riders now wearing helmets."
+                    st.session_state.telegram_alert_queue.put(message)
+                    self.alert_sent = False
 
             img = draw_boxes(img, results)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -171,15 +196,9 @@ else:  # Webcam mode
     def update_ui():
         while True:
             if webrtc_ctx.state.playing:
-                current_time = time.time()
-
                 if no_helmet_event.is_set():
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
-
-                    if current_time - st.session_state.last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
-                        st.session_state.telegram_alert_queue.put("🚨 Alert: Riders without helmets detected by HelmetGuard AI!")
-                        st.session_state.last_telegram_alert_time = current_time
                 else:
                     alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
                     audio_placeholder.empty()
@@ -193,12 +212,13 @@ else:  # Webcam mode
         while True:
             try:
                 message = st.session_state.telegram_alert_queue.get(timeout=1)
-                print("[Telegram] Sending:", message)
                 send_telegram_alert(message)
+                st.session_state.telegram_alert_queue.task_done()
             except queue.Empty:
                 pass
             except Exception as e:
-                print("[Telegram] Error:", e)
+                print(f"Error sending Telegram alert: {e}")
 
+    # Start the threads
     threading.Thread(target=update_ui, daemon=True).start()
     threading.Thread(target=telegram_alert_sender, daemon=True).start()
