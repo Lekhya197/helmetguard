@@ -110,80 +110,74 @@ if mode == "Upload Video":
 
 # ------------------ Webcam ------------------
 else:
-    # Store object states by track_id
-    object_states = {}
-
-    # Frame count for alert threshold
-    alert_frame_counter = 0
-
-class VideoProcessor(VideoProcessorBase):
-    def __init__(self):
-        self.alert_frame_counter = 0
-        self.object_states = {}
-
-    def recv(self, frame):
-        img_bgr = frame.to_ndarray(format="bgr24")
-        img_bgr = cv2.resize(img_bgr, (1280, 720))
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
-        results = model(img_rgb)
-        df = results.pandas().xyxy[0]
-
-        filtered = df[df['confidence'] >= CONFIDENCE_THRESHOLD]
-
-        detections = []
-        labels = []
-
-        for i, row in filtered.iterrows():
-            label = row['name']
-            conf = row['confidence']
-            xmin, ymin, xmax, ymax = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
-            track_id = i  # Replace with actual tracker ID if available
-            detections.append({'id': track_id, 'label': label, 'bbox': (xmin, ymin, xmax, ymax)})
-            labels.append(label)
-
-        violation_detected_this_frame = False
-
-        for detection in detections:
-            track_id = int(detection['id'])
-            label = detection['label']
-
-            state = self.object_states.get(track_id, {'last_state': None, 'alert_sent': False})
-
-            if label == 'no_helmet' and state['last_state'] == 'helmet_on' and not state['alert_sent']:
-                send_telegram_message_async(f"🚨 Helmet violation for object #{track_id}")
-                state['alert_sent'] = True
-                violation_detected_this_frame = True
-
-            elif label == 'helmet_on':
-                state['alert_sent'] = False
-                state['last_state'] = 'helmet_on'
-
-            else:
-                if state['last_state'] is None:
-                    state['last_state'] = label
-
-            self.object_states[track_id] = state
-
-        if violation_detected_this_frame:
-            self.alert_frame_counter += 1
-        else:
+    class VideoProcessor(VideoProcessorBase):
+        def __init__(self):
             self.alert_frame_counter = 0
+            self.object_states = {}
 
-        if self.alert_frame_counter >= alert_threshold:
-            st.session_state['alert_active'] = True
-        else:
-            st.session_state['alert_active'] = False
+        def recv(self, frame):
+            img_bgr = frame.to_ndarray(format="bgr24")
+            img_bgr = cv2.resize(img_bgr, (1280, 720))
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-        for detection in detections:
-            xmin, ymin, xmax, ymax = detection['bbox']
-            label = detection['label']
-            color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
-            cv2.rectangle(img_bgr, (xmin, ymin), (xmax, ymax), color, 2)
-            cv2.putText(img_bgr, label, (xmin, ymin - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            results = model(img_rgb)
+            df = results.pandas().xyxy[0]
 
-        return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
+            filtered = df[df['confidence'] >= CONFIDENCE_THRESHOLD]
+
+            detections = []
+            labels = []
+
+            for i, row in filtered.iterrows():
+                label = row['name']
+                conf = row['confidence']
+                xmin, ymin, xmax, ymax = int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])
+                track_id = i  # Replace with actual tracker ID if available
+                detections.append({'id': track_id, 'label': label, 'bbox': (xmin, ymin, xmax, ymax)})
+                labels.append(label)
+
+            violation_detected_this_frame = False
+
+            for detection in detections:
+                track_id = int(detection['id'])
+                label = detection['label']
+
+                state = self.object_states.get(track_id, {'last_state': None, 'alert_sent': False})
+
+                if label == 'no_helmet' and state['last_state'] == 'helmet_on' and not state['alert_sent']:
+                    send_telegram_message_async(f"🚨 Helmet violation for object #{track_id}")
+                    state['alert_sent'] = True
+                    violation_detected_this_frame = True
+
+                elif label == 'helmet_on':
+                    state['alert_sent'] = False
+                    state['last_state'] = 'helmet_on'
+
+                else:
+                    if state['last_state'] is None:
+                        state['last_state'] = label
+
+                self.object_states[track_id] = state
+
+            if violation_detected_this_frame:
+                self.alert_frame_counter += 1
+            else:
+                self.alert_frame_counter = 0
+
+            if self.alert_frame_counter >= alert_threshold:
+                st.session_state['alert_active'] = True
+            else:
+                st.session_state['alert_active'] = False
+
+            for detection in detections:
+                xmin, ymin, xmax, ymax = detection['bbox']
+                label = detection['label']
+                color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
+                cv2.rectangle(img_bgr, (xmin, ymin), (xmax, ymax), color, 2)
+                cv2.putText(img_bgr, label, (xmin, ymin - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
 
     if 'alert_active' not in st.session_state:
         st.session_state['alert_active'] = False
