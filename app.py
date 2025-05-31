@@ -1,181 +1,189 @@
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 import torch
 import cv2
 import av
+import numpy as np
 import time
 import threading
-import numpy as np
-import pandas as pd
+import pygame
 import requests
-import os
-from queue import Queue
 
-# Page configuration
-st.set_page_config(page_title="HelmetGuard AI - YOLOv5", page_icon="🛡️", layout="wide")
+# Telegram Bot Info
+BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
+CHAT_ID = '6674142283'
 
-# Load YOLOv5 model
+# Streamlit Config
+st.set_page_config(page_title="HelmetGuard AI - YOLOv5", layout="wide")
+st.title("🪖 HelmetGuard AI - Helmet Detection with YOLOv5")
+
+# Load alert audio
+alert_audio_file = open("alert.mp3", "rb").read()
+
+# Load model
 @st.cache_resource
 def load_model():
     return torch.hub.load('ultralytics/yolov5', 'custom', path='best.pt', force_reload=True)
 
 model = load_model()
 
-# Telegram Config
-TELEGRAM_BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
-TELEGRAM_CHAT_ID = '6674142283'
+# Sidebar configuration
+CONFIDENCE_THRESHOLD = st.sidebar.slider("Confidence Threshold", 0.0, 1.0, 0.5, 0.05)
+alert_threshold = 3  # Number of continuous frames to confirm no helmet before alert
 
-def send_telegram_alert(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    try:
-        r = requests.post(url, data=payload, timeout=5)
-        return r.status_code == 200
-    except Exception as e:
-        st.error(f"Telegram Error: {e}")
-        return False
+# Telegram async alert
+def send_telegram_message_async(message):
+    def send():
+        try:
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                          data={'chat_id': CHAT_ID, 'text': message})
+        except Exception as e:
+            st.warning(f"Telegram error: {e}")
+    threading.Thread(target=send).start()
 
-# Draw detection boxes
-def draw_boxes(frame, df):
-    for _, row in df.iterrows():
-        x1, y1, x2, y2 = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
-        label = f"{row['name']} {row['confidence']:.2f}"
-        color = (0, 255, 0) if row['name'] == 'helmet_on' else (0, 0, 255)
+# Play alert sound
+def play_alert_sound():
+    pygame.mixer.init()
+    pygame.mixer.music.load("alert.mp3")
+    pygame.mixer.music.play()
+
+# Draw boxes
+def draw_boxes(frame, results):
+    for *box, conf, cls in results.xyxy[0]:
+        if conf < CONFIDENCE_THRESHOLD:
+            continue
+        x1, y1, x2, y2 = map(int, box)
+        label = model.names[int(cls)]
+        conf_text = f"{label} {conf:.2f}"
+        color = (0, 255, 0) if label == 'helmet_on' else (0, 0, 255)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        cv2.putText(frame, conf_text, (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
-# Sidebar Configuration
-with st.sidebar:
-    st.header("🔧 Configuration")
-    conf_helmet = st.slider("Helmet Confidence", 0.0, 1.0, 0.4, 0.01)
-    conf_no_helmet = st.slider("No Helmet Confidence", 0.0, 1.0, 0.5, 0.01)
-    mode = st.radio("Select Mode", ["Upload Video", "Webcam"])
-    st.subheader("📊 Detection Metrics")
-    col1, col2 = st.columns(2)
-    helmet_metric = col1.empty()
-    no_helmet_metric = col2.empty()
-    status_message = st.empty()
-    alert_placeholder = st.empty()
+# Mode selector
+mode = st.sidebar.radio("Select Mode", ["Upload Video", "Webcam"])
 
-# Session state setup
-st.session_state.setdefault('alert_sent', False)
-st.session_state.setdefault('last_alert_time', 0)
-
-st.title("🛡️ HelmetGuard AI - YOLOv5 Helmet Detection")
-
-# === VIDEO UPLOAD MODE ===
+# ------------------ Upload Video Mode ------------------
 if mode == "Upload Video":
-    st.subheader("📁 Upload a Video")
-    video_file = st.file_uploader("Choose a file", type=["mp4", "avi", "mov", "mkv"])
-
-    if video_file:
-        temp_path = "temp_video.mp4"
-        with open(temp_path, "wb") as f:
+    video_file = st.file_uploader("Upload a video for helmet detection", type=["mp4", "mov", "avi"])
+    if video_file is not None:
+        temp_video_path = "temp_video.mp4"
+        with open(temp_video_path, "wb") as f:
             f.write(video_file.read())
+        cap = cv2.VideoCapture(temp_video_path)
 
-        cap = cv2.VideoCapture(temp_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        delay = 1.0 / fps if fps > 0 else 0.03
+        if not cap.isOpened():
+            st.error("❌ Could not open the uploaded video. Please try another file.")
+        else:
+            frame_placeholder = st.empty()
+            helmet_metric = st.sidebar.empty()
+            no_helmet_metric = st.sidebar.empty()
+            alert_placeholder = st.sidebar.empty()
+            audio_placeholder = st.empty()
 
-        placeholder = st.empty()
-        frame_count = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    st.info("🎬 Video processing complete.")
+                    break
+                results = model(frame)
+                detections = results.xyxy[0]
+                detections = detections[detections[:, 4] >= CONFIDENCE_THRESHOLD]
+                labels = [model.names[int(cls)] for cls in detections[:, 5]]
 
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+                helmet_count = labels.count('helmet_on')
+                no_helmet_count = labels.count('no_helmet')
 
-            results = model(frame)
-            df = results.pandas().xyxy[0]
+                frame = draw_boxes(frame, results)
 
-            df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
-            df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
+                helmet_metric.metric("✅ Helmet On", helmet_count)
+                no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
 
-            frame = draw_boxes(frame, pd.concat([df_helmet, df_no_helmet]))
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            placeholder.image(frame_rgb, channels="RGB")
+                if no_helmet_count > 0:
+                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                    audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                    send_telegram_message_async("🚨 Helmet violation detected in uploaded video!")
+                else:
+                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                    audio_placeholder.empty()
 
-            h_count = len(df_helmet)
-            nh_count = len(df_no_helmet)
-            helmet_metric.metric("✅ Helmet On", h_count)
-            no_helmet_metric.metric("🚨 No Helmet", nh_count)
-
-            if nh_count > 0:
-                status_message.error("❌ No Helmet Detected")
-                alert_placeholder.error("⚠️ Alert Triggered")
-                if not st.session_state.alert_sent:
-                    if send_telegram_alert(f"⚠️ ALERT: {nh_count} rider(s) without helmet detected!"):
-                        st.session_state.alert_sent = True
-            else:
-                status_message.success("✅ All Safe")
-                st.session_state.alert_sent = False
-
-            time.sleep(delay)
-
-        cap.release()
-        os.remove(temp_path)
-        status_message.success("✅ Video Processing Complete")
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(frame_rgb, channels="RGB")
+                time.sleep(0.03)
+            cap.release()
     else:
-        st.info("⬆️ Upload a video to begin")
+        st.info("⬆️ Please upload a video to begin helmet detection.")
 
-# === WEBCAM MODE ===
+# ------------------ Webcam Mode ------------------
 else:
-    st.subheader("🎥 Real-time Webcam Detection")
+    alert_state = {
+        "no_helmet_count": 0,
+        "alert_triggered": False
+    }
 
-    class VideoProcessor:
+    class VideoProcessor(VideoProcessorBase):
         def __init__(self):
-            self.h_count = 0
-            self.nh_count = 0
-            self.p_count = 0
-            self.trigger = False
+            self.frame = None
 
         def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            results = model(img)
+            img_bgr = frame.to_ndarray(format="bgr24")
+            img_bgr = cv2.resize(img_bgr, (1280, 720))
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+            results = model(img_rgb)
             df = results.pandas().xyxy[0]
 
-            df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
-            df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
-            df_person = df[df['name'] == 'person']
+            filtered = df[
+                ((df['name'] == 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD)) |
+                ((df['name'] != 'no_helmet') & (df['confidence'] >= CONFIDENCE_THRESHOLD))
+            ]
 
-            self.h_count = len(df_helmet)
-            self.nh_count = len(df_no_helmet)
-            self.p_count = len(df_person)
-            self.trigger = self.nh_count > 0 or self.p_count > 0
+            labels = list(filtered['name'])
 
-            img = draw_boxes(img, pd.concat([df_helmet, df_no_helmet, df_person]))
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
+            if 'no_helmet' in labels:
+                alert_state["no_helmet_count"] += 1
+            else:
+                alert_state["no_helmet_count"] = 0
+                alert_state["alert_triggered"] = False
+
+            for _, row in filtered.iterrows():
+                xmin, ymin, xmax, ymax = map(int, [row['xmin'], row['ymin'], row['xmax'], row['ymax']])
+                label = f"{row['name']} {row['confidence']:.2f}"
+                color = (0, 255, 0) if row['name'] == 'helmet_on' else (0, 0, 255)
+                cv2.rectangle(img_bgr, (xmin, ymin), (xmax, ymax), color, 2)
+                cv2.putText(img_bgr, label, (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            self.frame = img_bgr
+            return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
+
+    alert_placeholder = st.empty()
+    audio_placeholder = st.empty()
 
     ctx = webrtc_streamer(
-        key="realtime",
+        key="helmet-detection",
+        mode=WebRtcMode.SENDRECV,
         video_processor_factory=VideoProcessor,
         media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
+        async_processing=True
     )
 
-    def webcam_loop():
+    def update_ui():
         while True:
-            if ctx.state.playing and ctx.video_processor:
-                proc = ctx.video_processor
-                helmet_metric.metric("✅ Helmet On", proc.h_count)
-                no_helmet_metric.metric("🚨 No Helmet", proc.nh_count)
-
-                if proc.nh_count > 0:
-                    status_message.error("❌ No Helmet Detected")
-                    msg = f"⚠️ {proc.nh_count} no-helmet; 👤 {proc.p_count} person(s)"
-                    alert_placeholder.error(msg)
-                    if not st.session_state.alert_sent or time.time() - st.session_state.last_alert_time > 60:
-                        if send_telegram_alert(msg):
-                            st.session_state.alert_sent = True
-                            st.session_state.last_alert_time = time.time()
+            if ctx.state.playing:
+                if alert_state["no_helmet_count"] >= alert_threshold:
+                    if not alert_state["alert_triggered"]:
+                        alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                        audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
+                        send_telegram_message_async("🚨 Helmet violation detected in webcam feed!")
+                        play_alert_sound()
+                        alert_state["alert_triggered"] = True
                 else:
-                    status_message.success("✅ All Safe")
-                    st.session_state.alert_sent = False
+                    alert_placeholder.success("🟢 All Clear: All riders wearing helmets.")
+                    audio_placeholder.empty()
             else:
-                helmet_metric.empty()
-                no_helmet_metric.empty()
-                status_message.info("📷 Waiting for webcam...")
-            time.sleep(0.1)
+                alert_placeholder.info("📷 Webcam inactive.")
+                audio_placeholder.empty()
+            time.sleep(0.5)
 
-    threading.Thread(target=webcam_loop, daemon=True).start()
+    threading.Thread(target=update_ui, daemon=True).start()
