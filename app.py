@@ -179,14 +179,12 @@ else:  # Webcam mode
 
     def telegram_alert_sender():
         while True:
-            message = telegram_alert_queue.get()
-            if message:
+            try:
+                message = telegram_alert_queue.get(timeout=1)
                 send_telegram_alert(message)
-            time.sleep(1)  # slight delay to avoid spamming
+            except queue.Empty:
+                pass
 
     # Start both threads
-    ui_thread = threading.Thread(target=update_ui, daemon=True)
-    ui_thread.start()
-
-    telegram_thread = threading.Thread(target=telegram_alert_sender, daemon=True)
-    telegram_thread.start()
+    threading.Thread(target=update_ui, daemon=True).start()
+    threading.Thread(target=telegram_alert_sender, daemon=True).start()
