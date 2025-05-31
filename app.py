@@ -139,11 +139,11 @@ if mode == "Upload Video":
 else:  # Webcam mode
     st.header("🟢 Real-Time Helmet Detection (Webcam)")
 
-    # Use globally defined Telegram queue and time tracker if possible
+    # Setup placeholders and session state
     if 'telegram_alert_queue' not in st.session_state:
         st.session_state.telegram_alert_queue = queue.Queue()
     if 'last_telegram_alert_time' not in st.session_state:
-        st.session_state.last_telegram_alert_time = 0
+        st.session_state.last_telegram_alert_time = 0.0
 
     no_helmet_event = threading.Event()
 
@@ -172,13 +172,12 @@ else:  # Webcam mode
         while True:
             if webrtc_ctx.state.playing:
                 current_time = time.time()
+
                 if no_helmet_event.is_set():
                     alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
                     audio_placeholder.audio(alert_audio_file, format="audio/mp3", start_time=0)
 
                     if current_time - st.session_state.last_telegram_alert_time > ALERT_INTERVAL_SECONDS:
-                        # 🔍 Debug Print
-                        print("[DEBUG] Putting alert message into queue")
                         st.session_state.telegram_alert_queue.put("🚨 Alert: Riders without helmets detected by HelmetGuard AI!")
                         st.session_state.last_telegram_alert_time = current_time
                 else:
@@ -187,18 +186,19 @@ else:  # Webcam mode
             else:
                 alert_placeholder.info("📷 Webcam inactive.")
                 audio_placeholder.empty()
+
             time.sleep(0.5)
 
     def telegram_alert_sender():
         while True:
             try:
                 message = st.session_state.telegram_alert_queue.get(timeout=1)
-                print("[DEBUG] Sending Telegram message:", message)
+                print("[Telegram] Sending:", message)
                 send_telegram_alert(message)
             except queue.Empty:
                 pass
             except Exception as e:
-                print("[ERROR] Telegram sending failed:", e)
+                print("[Telegram] Error:", e)
 
     threading.Thread(target=update_ui, daemon=True).start()
     threading.Thread(target=telegram_alert_sender, daemon=True).start()
