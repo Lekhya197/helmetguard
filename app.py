@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import requests
 import os
+from queue import Queue
 
 # Page configuration
 st.set_page_config(
@@ -25,7 +26,7 @@ def load_model():
 
 model = load_model()
 
-# Telegram Bot Config (should be moved to secrets in production)
+# Telegram Bot Config
 TELEGRAM_BOT_TOKEN = '7133866876:AAFXl8AAKLCxQxgzdpOeBItLBh3ndAkt46Y'
 TELEGRAM_CHAT_ID = '6674142283'
 
@@ -75,7 +76,7 @@ def draw_boxes(frame, results_df):
         cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
     return frame
 
-# State to avoid spamming alerts
+# State management
 if 'alert_sent' not in st.session_state:
     st.session_state.alert_sent = False
 if 'last_alert_time' not in st.session_state:
@@ -101,58 +102,90 @@ if mode == "Upload Video":
         
         # Process video
         st.markdown("---")
-        st.subheader("Processing video...")
+        processing_status = st.empty()
+        frame_placeholder = st.empty()
+        metrics_placeholder = st.empty()
         
         cap = cv2.VideoCapture(temp_video_path)
-        frame_placeholder = st.empty()
         
         if not cap.isOpened():
             st.error("❌ Could not open the uploaded video. Please try another file.")
         else:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    st.success("✅ Video processing complete!")
-                    helmet_metric.empty()
-                    no_helmet_metric.empty()
-                    alert_placeholder.empty()
-                    st.session_state.alert_sent = False
-                    break
-                
-                # Perform detection
-                results = model(frame)
-                df = results.pandas().xyxy[0]
-                
-                # Filter by confidence thresholds
-                df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
-                df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
-                
-                helmet_count = len(df_helmet)
-                no_helmet_count = len(df_no_helmet)
-                
-                # Update metrics
-                helmet_metric.metric("✅ Helmet On", helmet_count)
-                no_helmet_metric.metric("🚨 No Helmet", no_helmet_count)
-                
-                # Check for alerts
-                if no_helmet_count > 0:
-                    alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
-                    if not st.session_state.alert_sent:
-                        if send_telegram_alert(f"⚠️ ALERT: {no_helmet_count} rider(s) without helmet detected!"):
-                            st.session_state.alert_sent = True
-                else:
-                    alert_placeholder.empty()
-                    st.session_state.alert_sent = False
-                
-                # Draw boxes and display
-                frame = draw_boxes(frame, pd.concat([df_helmet, df_no_helmet]))
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(frame_rgb, channels="RGB")
-                
-                time.sleep(0.03)
+            # Get video properties for proper timing
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_delay = 1.0 / fps if fps > 0 else 0.03
             
-            cap.release()
-            os.remove(temp_video_path)
+            # Create a queue for frame processing results
+            result_queue = Queue()
+            
+            def process_video():
+                frame_count = 0
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        result_queue.put(('end', None, None, None))
+                        break
+                    
+                    # Perform detection
+                    results = model(frame)
+                    df = results.pandas().xyxy[0]
+                    
+                    # Filter by confidence thresholds
+                    df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
+                    df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
+                    
+                    helmet_count = len(df_helmet)
+                    no_helmet_count = len(df_no_helmet)
+                    
+                    # Draw boxes
+                    frame = draw_boxes(frame, pd.concat([df_helmet, df_no_helmet]))
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    
+                    result_queue.put(('frame', frame_rgb, helmet_count, no_helmet_count))
+                    frame_count += 1
+                    processing_status.info(f"Processing frame {frame_count}...")
+                    time.sleep(frame_delay)
+                
+                cap.release()
+                os.remove(temp_video_path)
+            
+            # Start video processing in a separate thread
+            processing_thread = threading.Thread(target=process_video, daemon=True)
+            processing_thread.start()
+            
+            # Main display loop
+            while True:
+                if not result_queue.empty():
+                    result_type, frame, helmet_count, no_helmet_count = result_queue.get()
+                    
+                    if result_type == 'end':
+                        processing_status.success("✅ Video processing complete!")
+                        helmet_metric.empty()
+                        no_helmet_metric.empty()
+                        alert_placeholder.empty()
+                        st.session_state.alert_sent = False
+                        break
+                    
+                    # Update display
+                    frame_placeholder.image(frame, channels="RGB")
+                    
+                    # Update metrics
+                    with metrics_placeholder.container():
+                        col1, col2 = st.columns(2)
+                        col1.metric("✅ Helmet On", helmet_count)
+                        col2.metric("🚨 No Helmet", no_helmet_count)
+                    
+                    # Check for alerts
+                    if no_helmet_count > 0:
+                        alert_placeholder.error("⚠️ Alert: Riders without helmets detected!")
+                        if not st.session_state.alert_sent:
+                            if send_telegram_alert(f"⚠️ ALERT: {no_helmet_count} rider(s) without helmet detected!"):
+                                st.session_state.alert_sent = True
+                    else:
+                        alert_placeholder.empty()
+                        st.session_state.alert_sent = False
+                
+                time.sleep(0.01)  # Small sleep to prevent busy waiting
     else:
         st.info("⬆️ Please upload a video to begin helmet detection.")
 
@@ -164,6 +197,7 @@ else:  # Webcam Mode
         def __init__(self):
             self.helmet_count = 0
             self.no_helmet_count = 0
+            self.person_count = 0
             self.alert_triggered = False
         
         def recv(self, frame):
@@ -176,7 +210,7 @@ else:  # Webcam Mode
             # Filter by confidence thresholds
             df_helmet = df[(df['name'] == 'helmet_on') & (df['confidence'] >= conf_helmet)]
             df_no_helmet = df[(df['name'] == 'no_helmet') & (df['confidence'] >= conf_no_helmet)]
-            df_person = df[df['name'] == 'person']  # Detect persons
+            df_person = df[df['name'] == 'person']
             
             self.helmet_count = len(df_helmet)
             self.no_helmet_count = len(df_no_helmet)
@@ -203,7 +237,7 @@ else:  # Webcam Mode
                 helmet_metric.metric("✅ Helmet On", processor.helmet_count)
                 no_helmet_metric.metric("🚨 No Helmet", processor.no_helmet_count)
                 
-                # Check for alerts (either no helmet or person detected)
+                # Check for alerts
                 current_time = time.time()
                 if processor.alert_triggered:
                     alert_message = ""
@@ -229,7 +263,7 @@ else:  # Webcam Mode
                 alert_placeholder.info("📷 Webcam inactive.")
                 st.session_state.alert_sent = False
             
-            time.sleep(0.5)
+            time.sleep(0.1)  # Reduced sleep time for more responsive UI
     
     ui_thread = threading.Thread(target=update_ui, daemon=True)
     ui_thread.start()
